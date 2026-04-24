@@ -40,7 +40,7 @@ export default function PDFSidebar({
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const showToast = (message: string, type: ToastState['type']) => {
+  const showToast = (message: string, type: NonNullable<ToastState>['type']) => {
     setToast({ message, type });
     if (type !== 'loading') {
       setTimeout(() => setToast(null), 3500);
