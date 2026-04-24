@@ -58,6 +58,7 @@ Frontend runs at `http://localhost:3000`.
 4. Set environment variables:
    - `GROQ_API_KEY` — from [console.groq.com](https://console.groq.com)
    - `HF_TOKEN` — from [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
+   - `NEXT_PUBLIC_API_URL` - https://your-service-name.onrender.com
 5. Build & start commands auto-detected from `render.yaml`
 
 ### Frontend → Vercel
