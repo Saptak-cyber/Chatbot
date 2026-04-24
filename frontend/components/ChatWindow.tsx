@@ -37,10 +37,34 @@ export default function ChatWindow({
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const storageKey = `docmind_messages_${sessionId}`;
+  const hasLoadedFromStorage = useRef(false);
 
   const activePdfs = pdfs.filter((p) => activePdfIds.includes(p.id));
   const hasActivePdfs = activePdfIds.length > 0;
   const canSend = hasActivePdfs && input.trim().length > 0 && !isLoading;
+
+  // Restore messages from localStorage on mount
+  useEffect(() => {
+    const stored = localStorage.getItem(storageKey);
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored) as (Omit<Message, 'timestamp'> & { timestamp: string })[];
+        setMessages(parsed.map((m) => ({ ...m, timestamp: new Date(m.timestamp) })));
+      } catch {
+        // Corrupted data — start fresh
+      }
+    }
+    hasLoadedFromStorage.current = true;
+  }, [storageKey]);
+
+  // Persist messages to localStorage whenever they change
+  useEffect(() => {
+    if (!hasLoadedFromStorage.current) return;
+    if (messages.length > 0) {
+      localStorage.setItem(storageKey, JSON.stringify(messages));
+    }
+  }, [messages, storageKey]);
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -109,6 +133,7 @@ export default function ChatWindow({
     if (messages.length === 0) return;
     if (!confirm('Clear conversation history?')) return;
     setMessages([]);
+    localStorage.removeItem(storageKey);
     try {
       await clearChatHistory(sessionId);
     } catch {

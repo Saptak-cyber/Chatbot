@@ -186,12 +186,15 @@ export default function PDFSidebar({
               <div
                 key={pdf.id}
                 className={`pdf-card ${selectedPdfIds.has(pdf.id) ? 'selected' : ''}`}
+                onClick={() => handleToggleSelect(pdf.id)}
+                style={{ cursor: 'pointer' }}
               >
                 <input
                   type="checkbox"
                   className="pdf-checkbox"
                   checked={selectedPdfIds.has(pdf.id)}
                   onChange={() => handleToggleSelect(pdf.id)}
+                  onClick={(e) => e.stopPropagation()}
                   id={`pdf-check-${pdf.id}`}
                   title={`Select ${pdf.name}`}
                 />
@@ -225,7 +228,7 @@ export default function PDFSidebar({
                 </div>
                 <button
                   className="pdf-delete-btn"
-                  onClick={() => handleDelete(pdf)}
+                  onClick={(e) => { e.stopPropagation(); handleDelete(pdf); }}
                   disabled={deletingId === pdf.id}
                   title={`Delete ${pdf.name}`}
                   id={`delete-pdf-${pdf.id}`}

@@ -65,24 +65,18 @@ export default function MessageBubble({
         className="message-meta"
         style={{ flexDirection: role === 'user' ? 'row-reverse' : 'row' }}
       >
-        <div className={`message-avatar ${role}`}>
-          {role === 'user' ? 'U' : <FileText size={14} />}
-        </div>
+        {role === 'assistant' && (
+          <div className={`message-avatar ${role}`}>
+            <FileText size={14} />
+          </div>
+        )}
         <span className="message-time">{formatTime(timestamp)}</span>
       </div>
 
       {/* Bubble + (optional) citation block */}
       <div style={{ maxWidth: '72%', display: 'flex', flexDirection: 'column' }}>
         <div
-          className={`message-bubble ${role} ${isError ? 'error-bubble' : ''}`}
-          style={{
-            borderRadius:
-              role === 'user'
-                ? '16px 16px 4px 16px'
-                : hasCitations
-                ? '16px 16px 0 4px'
-                : '16px 16px 16px 4px',
-          }}
+          className={`message-bubble ${role} ${isError ? 'error-bubble' : ''} ${hasCitations ? 'has-citations' : ''}`}
         >
           {renderContent(content)}
         </div>
