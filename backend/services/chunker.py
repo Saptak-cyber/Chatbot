@@ -1,18 +1,33 @@
 """
 Semantic chunking using LlamaIndex's SemanticSplitterNodeParser.
 
-Strategy: page-scoped semantic chunking with cross-page tail overlap.
+Strategy: page-scoped semantic chunking with two enhancements:
 
-Each PDF page is chunked independently so every chunk retains an exact page
-number for citations.  To handle paragraphs/sentences that straddle a page
-break, the last PAGE_OVERLAP_SENTENCES sentences of page N are prepended to
-page N+1 before chunking.  The overlap text is tagged so it is NOT
-double-counted in citations — the resulting chunk is still attributed to the
-page where the *new* content starts, but its embedding captures the full
-cross-boundary meaning.
+  1. Cross-page tail overlap
+     The last PAGE_OVERLAP_SENTENCES sentences of page N are prepended to
+     page N+1 before chunking so paragraphs that straddle a page break are
+     captured in a single coherent chunk.
+
+  2. Contextual header injection  (Anthropic-style contextual retrieval)
+     Before each chunk is embedded, a short structured header is prepended:
+
+       Document: report.pdf | Section: Introduction | Page: 3
+
+     This means the embedding vector encodes *where* the chunk sits in the
+     document, not just what it says.  Queries that reference a section by
+     name or ask "what does Chapter 2 say about X" now match correctly even
+     when the chunk text alone would score poorly.
+
+     Section headings are detected heuristically: any line whose dominant
+     font size is in the top 20 % of all font sizes on that page is treated
+     as a heading.  The active heading persists across pages so chunks on
+     pages without a visible heading still inherit the last known section.
 
 Uses the HF Inference API embedding from services/embedder.py (no local model).
 """
+from __future__ import annotations
+
+import re
 from llama_index.core import Document
 from llama_index.core.node_parser import SemanticSplitterNodeParser
 import fitz  # PyMuPDF
@@ -21,10 +36,17 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Number of sentences carried over from the bottom of the previous page.
-# 3 sentences is enough to bridge most cross-page paragraph breaks without
-# bloating the chunk embeddings with irrelevant prior-page content.
+# ── Tuning knobs ──────────────────────────────────────────────────────────────
+
+# Sentences carried forward from the bottom of the previous page to bridge
+# cross-page paragraph breaks.
 PAGE_OVERLAP_SENTENCES = 3
+
+# A line is classified as a heading if its dominant font size is at or above
+# this percentile of all font sizes seen on the page.
+HEADING_FONT_PERCENTILE = 0.80
+
+# ── Singleton splitter ────────────────────────────────────────────────────────
 
 _splitter: Optional[SemanticSplitterNodeParser] = None
 
@@ -44,14 +66,87 @@ def get_splitter() -> SemanticSplitterNodeParser:
     return _splitter
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def _tail_sentences(text: str, n: int) -> str:
     """Return the last `n` sentences of `text` as a single string."""
-    # Split on sentence-ending punctuation followed by whitespace or end-of-string.
-    import re
     sentences = re.split(r'(?<=[.!?])\s+', text.strip())
     tail = sentences[-n:] if len(sentences) >= n else sentences
     return " ".join(tail)
 
+
+def _extract_headings(page: fitz.Page) -> List[str]:
+    """
+    Return heading-like lines from a PyMuPDF page.
+
+    A line is considered a heading if its dominant span font size is at or
+    above the HEADING_FONT_PERCENTILE of all font sizes on the page.
+    Bold-only short lines (≤ 80 chars) with no sentence-ending punctuation
+    are also accepted as headings even if their size doesn't hit the threshold.
+    """
+    try:
+        blocks = page.get_text("dict")["blocks"]
+    except Exception:
+        return []
+
+    # Collect every font size seen on this page
+    all_sizes: List[float] = []
+    for block in blocks:
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                sz = span.get("size", 0)
+                if sz > 0:
+                    all_sizes.append(sz)
+
+    if not all_sizes:
+        return []
+
+    sorted_sizes = sorted(all_sizes)
+    threshold = sorted_sizes[int(len(sorted_sizes) * HEADING_FONT_PERCENTILE)]
+
+    headings: List[str] = []
+    for block in blocks:
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            spans = line.get("spans", [])
+            if not spans:
+                continue
+
+            line_text = "".join(s.get("text", "") for s in spans).strip()
+            if not line_text or len(line_text) < 2:
+                continue
+
+            dominant_size = max(s.get("size", 0) for s in spans)
+            is_bold = any(s.get("flags", 0) & 2**4 for s in spans)  # bold flag
+
+            size_qualifies = dominant_size >= threshold
+            # Short bold line with no trailing sentence punctuation → likely a heading
+            bold_short = is_bold and len(line_text) <= 80 and not line_text[-1] in ".?!"
+
+            if (size_qualifies or bold_short) and line_text not in headings:
+                headings.append(line_text)
+
+    return headings
+
+
+def _build_context_header(pdf_name: str, page_number: int, section: str) -> str:
+    """
+    Build the short context string prepended to every chunk before embedding.
+
+    Example:
+        Document: annual_report.pdf | Section: Financial Highlights | Page: 5
+    """
+    parts = [f"Document: {pdf_name}"]
+    if section:
+        parts.append(f"Section: {section}")
+    parts.append(f"Page: {page_number}")
+    return " | ".join(parts)
+
+
+# ── Main entry point ──────────────────────────────────────────────────────────
 
 def extract_and_chunk_pdf(
     pdf_bytes: bytes,
@@ -59,17 +154,18 @@ def extract_and_chunk_pdf(
     pdf_name: str,
 ) -> List[Dict[str, Any]]:
     """
-    Extract text from PDF page-by-page with tail overlap between pages,
-    then apply semantic chunking within each (possibly overlapped) page.
+    Extract text from PDF page-by-page with tail overlap and contextual header
+    injection, then apply semantic chunking within each page.
 
     Returns a flat list of chunk dicts:
     {
-        "text": str,
+        "text": str,          # header + chunk body (used for embedding + LLM context)
         "metadata": {
-            "pdf_id": str,
-            "pdf_name": str,
-            "page_number": int,   # 1-indexed — the page where new content starts
+            "pdf_id":      str,
+            "pdf_name":    str,
+            "page_number": int,   # 1-indexed — page where the new content starts
             "chunk_index": int,
+            "section":     str,   # active section heading (empty string if unknown)
         }
     }
     """
@@ -80,42 +176,43 @@ def extract_and_chunk_pdf(
 
     logger.info(f"Processing PDF '{pdf_name}' ({len(doc)} pages)...")
 
-    prev_page_tail: str = ""  # tail sentences carried over from the previous page
+    prev_page_tail: str = ""   # cross-page overlap context
+    active_section: str = ""   # last detected section heading (persists across pages)
 
     for page_num in range(len(doc)):
         page = doc[page_num]
         text = page.get_text().strip()
 
         if not text or len(text) < 30:
-            # Blank/image-only page — reset the tail so we don't bridge over it
             prev_page_tail = ""
             continue
 
-        # Prepend the previous page's tail so cross-page paragraphs are captured
-        # in a single coherent chunk embedding.
-        if prev_page_tail:
-            combined_text = prev_page_tail + "\n" + text
-        else:
-            combined_text = text
+        # ── 1. Update active section heading ─────────────────────────────────
+        page_headings = _extract_headings(page)
+        if page_headings:
+            # Use the first (topmost) heading on the page as the section label
+            active_section = page_headings[0]
 
-        # Update tail for the next iteration BEFORE chunking (uses raw page text,
-        # not the combined text, so the overlap doesn't compound across many pages)
+        # ── 2. Cross-page tail overlap ────────────────────────────────────────
+        body_text = (prev_page_tail + "\n" + text).strip() if prev_page_tail else text
         prev_page_tail = _tail_sentences(text, PAGE_OVERLAP_SENTENCES)
 
-        # Create a LlamaIndex Document attributed to the current page.
-        # Even though combined_text may start with sentences from the previous
-        # page, the citation page number is always the current page — this is
-        # the page where the *new* content lives.
+        # ── 3. Build context header ───────────────────────────────────────────
+        header = _build_context_header(pdf_name, page_num + 1, active_section)
+        # The header is prepended so the embedding encodes document position.
+        # The LLM also sees it, which helps it produce precise inline citations.
+        contextual_text = f"{header}\n\n{body_text}"
+
+        # ── 4. Semantic split ─────────────────────────────────────────────────
         llama_doc = Document(
-            text=combined_text,
+            text=contextual_text,
             metadata={
                 "pdf_id": pdf_id,
                 "pdf_name": pdf_name,
-                "page_number": page_num + 1,  # 1-indexed
+                "page_number": page_num + 1,
             },
         )
 
-        # Apply semantic chunking — splits based on embedding similarity
         nodes = splitter.get_nodes_from_documents([llama_doc])
 
         for chunk_idx, node in enumerate(nodes):
@@ -130,6 +227,7 @@ def extract_and_chunk_pdf(
                         "pdf_name": pdf_name,
                         "page_number": page_num + 1,
                         "chunk_index": chunk_idx,
+                        "section": active_section,
                     },
                 }
             )

@@ -8,7 +8,8 @@ export interface PDFInfo {
 export interface Citation {
   pdf_name: string;
   page_number: number;
-  score?: number;  // cosine similarity (0–1) of the best matching chunk on this page
+  section?: string;  // active section heading when the chunk was indexed
+  score?: number;    // cosine similarity (0–1) of the best matching chunk on this page
 }
 
 export interface Message {

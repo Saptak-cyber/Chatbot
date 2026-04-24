@@ -26,6 +26,7 @@ class ChatRequest(BaseModel):
 class Citation(BaseModel):
     pdf_name: str
     page_number: int
+    section: Optional[str] = None  # active section heading when the chunk was created
     score: Optional[float] = None  # cosine similarity of the best chunk on this page
 
 

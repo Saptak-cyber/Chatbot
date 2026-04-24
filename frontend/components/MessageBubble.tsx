@@ -110,10 +110,35 @@ export default function MessageBubble({
               Sources:
             </span>
             {sources.map((c, idx) => (
-              <span key={idx} className="citation-chip" title={c.pdf_name}>
+              <span
+                key={idx}
+                className="citation-chip"
+                title={[
+                  c.pdf_name,
+                  c.section ? `§ ${c.section}` : null,
+                  `Page ${c.page_number}`,
+                  c.score !== undefined ? `${Math.round(c.score * 100)}% match` : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              >
                 <FileText size={9} />
                 p.{c.page_number}
-                {isMultiPdf && (
+                {c.section && (
+                  <span
+                    style={{
+                      opacity: 0.75,
+                      maxWidth: 120,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      fontStyle: 'italic',
+                    }}
+                  >
+                    &nbsp;§&nbsp;{c.section}
+                  </span>
+                )}
+                {!c.section && isMultiPdf && (
                   <span
                     style={{
                       opacity: 0.7,

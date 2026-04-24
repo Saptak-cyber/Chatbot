@@ -56,7 +56,7 @@ async def chat(request: ChatRequest):
             query=request.message,
             pdf_ids=request.active_pdf_ids,
             top_k=8,
-            min_score=0.25,
+            min_score=0.20,
         )
     except Exception as e:
         logger.error(f"Vector store query failed: {e}")
@@ -136,22 +136,28 @@ def _build_citations(chunks: List[Dict]) -> List[Citation]:
     """Build a deduplicated, sorted list of Citations from retrieved chunks.
 
     For each unique (pdf_name, page_number) pair the highest similarity score
-    among all chunks on that page is recorded so the UI can show retrieval
-    confidence.
+    among all chunks on that page is recorded, along with the section heading
+    that was active when those chunks were created.
     """
-    best_score: dict = {}
+    best: dict = {}  # key → {"score": float, "section": str}
     for chunk in chunks:
         meta = chunk["metadata"]
         key = (meta["pdf_name"], meta["page_number"])
-        best_score[key] = max(best_score.get(key, 0.0), chunk.get("score", 0.0))
+        score = chunk.get("score", 0.0)
+        if key not in best or score > best[key]["score"]:
+            best[key] = {
+                "score": score,
+                "section": meta.get("section", ""),
+            }
 
     citations = [
         Citation(
             pdf_name=key[0],
             page_number=key[1],
-            score=round(score, 3),
+            section=info["section"] or None,
+            score=round(info["score"], 3),
         )
-        for key, score in best_score.items()
+        for key, info in best.items()
     ]
     citations.sort(key=lambda c: (c.pdf_name, c.page_number))
     return citations
