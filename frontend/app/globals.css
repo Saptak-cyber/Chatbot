@@ -582,6 +582,7 @@ body {
   box-shadow: var(--shadow-glow);
 }
 
+.chat-empty h1,
 .chat-empty h2 {
   font-size: 20px;
   font-weight: 700;
@@ -674,6 +675,28 @@ body {
   background: var(--error-dim);
   border-color: rgba(239, 68, 68, 0.25);
   color: #fca5a5;
+}
+
+.message-bubble.assistant.refusal-bubble {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.25);
+  color: var(--text-secondary);
+}
+
+.refusal-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--warning);
+  background: var(--warning-dim);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: 0 0 var(--radius-md) var(--radius-sm);
+  padding: 5px 12px;
+  margin-top: -6px;
+  border-top: none;
+  letter-spacing: 0.2px;
 }
 
 .message-avatar {

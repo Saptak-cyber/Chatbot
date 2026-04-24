@@ -50,28 +50,38 @@ async def chat(request: ChatRequest):
     # Limit to last MAX_HISTORY_TURNS exchanges
     recent_history = history[-(MAX_HISTORY_TURNS * 2):]
 
-    # Query ChromaDB for relevant chunks
+    # Query ChromaDB for relevant chunks (min_score threshold applied inside)
     try:
         chunks = query_chunks(
             query=request.message,
             pdf_ids=request.active_pdf_ids,
-            top_k=6,
+            top_k=8,
+            min_score=0.25,
         )
     except Exception as e:
         logger.error(f"Vector store query failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve relevant context.")
 
+    # ── Deterministic out-of-scope refusal ────────────────────────────────────
+    # If no chunk cleared the similarity threshold the query is almost certainly
+    # outside the PDF's content. Refuse immediately without calling the LLM.
     if not chunks:
         response_text = (
-            "I cannot find relevant information in the selected PDF(s). "
-            "Please ensure you have selected the correct PDFs and that they have been loaded."
+            "I'm sorry, but this question does not appear to be covered by the "
+            "uploaded PDF(s). I can only answer questions based on the content of "
+            "the documents you have provided. Please ask something that is addressed "
+            "within those documents."
         )
         _update_history(request.session_id, history, request.message, response_text)
         return ChatResponse(
             response=response_text,
             session_id=request.session_id,
             sources_used=[],
+            is_grounded=False,
+            retrieval_score=None,
         )
+
+    retrieval_score = round(chunks[0]["score"], 4)
 
     # Generate grounded response via Groq
     try:
@@ -84,6 +94,11 @@ async def chat(request: ChatRequest):
         logger.error(f"LLM generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"LLM error: {str(e)}")
 
+    # ── Detect LLM-level refusals ─────────────────────────────────────────────
+    # Even when chunks pass the threshold, the LLM may still decide the context
+    # doesn't actually answer the question. Detect the standard refusal prefix.
+    is_grounded = "cannot find an answer" not in response_text.lower()
+
     # Update history with CLEAN messages (no context injected)
     _update_history(request.session_id, history, request.message, response_text)
 
@@ -93,7 +108,9 @@ async def chat(request: ChatRequest):
     return ChatResponse(
         response=response_text,
         session_id=request.session_id,
-        sources_used=citations,
+        sources_used=citations if is_grounded else [],
+        is_grounded=is_grounded,
+        retrieval_score=retrieval_score,
     )
 
 
@@ -116,19 +133,25 @@ def _update_history(session_id: str, current_history: List[Dict], user_msg: str,
 
 
 def _build_citations(chunks: List[Dict]) -> List[Citation]:
-    """Build a deduplicated, sorted list of Citations from retrieved chunks."""
-    seen = set()
-    citations = []
+    """Build a deduplicated, sorted list of Citations from retrieved chunks.
+
+    For each unique (pdf_name, page_number) pair the highest similarity score
+    among all chunks on that page is recorded so the UI can show retrieval
+    confidence.
+    """
+    best_score: dict = {}
     for chunk in chunks:
         meta = chunk["metadata"]
         key = (meta["pdf_name"], meta["page_number"])
-        if key not in seen:
-            seen.add(key)
-            citations.append(
-                Citation(
-                    pdf_name=meta["pdf_name"],
-                    page_number=meta["page_number"],
-                )
-            )
+        best_score[key] = max(best_score.get(key, 0.0), chunk.get("score", 0.0))
+
+    citations = [
+        Citation(
+            pdf_name=key[0],
+            page_number=key[1],
+            score=round(score, 3),
+        )
+        for key, score in best_score.items()
+    ]
     citations.sort(key=lambda c: (c.pdf_name, c.page_number))
     return citations

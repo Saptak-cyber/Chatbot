@@ -58,10 +58,17 @@ def add_chunks(chunks: List[Dict[str, Any]]) -> int:
 def query_chunks(
     query: str,
     pdf_ids: List[str],
-    top_k: int = 6,
+    top_k: int = 8,
+    min_score: float = 0.25,
 ) -> List[Dict[str, Any]]:
     """
     Query ChromaDB for the most relevant chunks filtered to the given pdf_ids.
+
+    Chunks below `min_score` (cosine similarity) are discarded so the LLM only
+    receives genuinely relevant context. If nothing clears the threshold the
+    caller should treat this as an out-of-scope query and refuse immediately
+    without calling the LLM.
+
     Returns chunks sorted by cosine similarity (highest first).
     """
     from services.embedder import embed_query
@@ -102,16 +109,22 @@ def query_chunks(
             results["metadatas"][0],
             results["distances"][0],
         ):
-            chunks.append(
-                {
-                    "text": doc,
-                    "metadata": meta,
-                    "score": float(1 - dist),  # cosine similarity
-                }
-            )
+            score = float(1 - dist)  # cosine similarity
+            if score < min_score:
+                continue
+            chunks.append({"text": doc, "metadata": meta, "score": score})
 
     # Sort by score descending
     chunks.sort(key=lambda x: x["score"], reverse=True)
+
+    if chunks:
+        logger.info(
+            f"Returning {len(chunks)} chunks above min_score={min_score} "
+            f"(top score: {chunks[0]['score']:.3f})"
+        )
+    else:
+        logger.info(f"No chunks cleared min_score={min_score} — query is likely out of scope.")
+
     return chunks
 
 

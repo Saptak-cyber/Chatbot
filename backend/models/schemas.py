@@ -26,9 +26,12 @@ class ChatRequest(BaseModel):
 class Citation(BaseModel):
     pdf_name: str
     page_number: int
+    score: Optional[float] = None  # cosine similarity of the best chunk on this page
 
 
 class ChatResponse(BaseModel):
     response: str
     session_id: str
     sources_used: List[Citation]
+    is_grounded: bool = True          # False when the query is out of scope / refused
+    retrieval_score: Optional[float] = None  # max cosine similarity among retrieved chunks
