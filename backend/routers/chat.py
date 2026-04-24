@@ -1,11 +1,14 @@
 """
 Chat endpoint with full RAG pipeline:
 - Retrieves relevant chunks from ChromaDB filtered by active PDF IDs
-- Maintains per-session conversation history
+- Maintains per-session conversation history, persisted to disk so it survives
+  server restarts and stays in sync with the frontend's localStorage log
 - Calls Groq Llama 3.3 70B with strict grounding system prompt
 - Returns response with page citations
 """
+import json
 import logging
+import os
 from fastapi import APIRouter, HTTPException
 from models.schemas import ChatRequest, ChatResponse, Citation
 from services.vector_store import query_chunks
@@ -15,12 +18,40 @@ from typing import Dict, List
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Chat"])
 
-# In-memory conversation history keyed by session_id
-# Each value is a list of clean {"role": str, "content": str} dicts
-# (without the injected context — that is re-added per-turn)
+MAX_HISTORY_TURNS = 5  # Keep last 5 user/assistant exchanges (10 messages)
+
+HISTORY_PATH = os.getenv("HISTORY_PATH", "./chat_history.json")
+
+# ── Disk-backed conversation history ─────────────────────────────────────────
+# Keyed by session_id → list of clean {"role", "content"} dicts.
+# Persisted to HISTORY_PATH so the backend survives restarts without losing
+# context that the frontend already has in localStorage.
+
 _conversation_history: Dict[str, List[Dict]] = {}
 
-MAX_HISTORY_TURNS = 5  # Keep last 5 user/assistant exchanges (10 messages)
+
+def _load_history() -> None:
+    global _conversation_history
+    if os.path.exists(HISTORY_PATH):
+        try:
+            with open(HISTORY_PATH, "r") as f:
+                _conversation_history = json.load(f)
+            logger.info(f"Loaded conversation history for {len(_conversation_history)} session(s).")
+        except Exception as e:
+            logger.warning(f"Could not load chat history: {e}")
+            _conversation_history = {}
+
+
+def _save_history() -> None:
+    try:
+        with open(HISTORY_PATH, "w") as f:
+            json.dump(_conversation_history, f, indent=2)
+    except Exception as e:
+        logger.error(f"Could not save chat history: {e}")
+
+
+# Load persisted history when the module is first imported
+_load_history()
 
 
 @router.post("/chat", response_model=ChatResponse, summary="Send a message and get a grounded response")
@@ -118,18 +149,20 @@ async def chat(request: ChatRequest):
 async def clear_history(session_id: str):
     """Clear the conversation memory for a given session_id."""
     _conversation_history.pop(session_id, None)
+    _save_history()
     return {"message": "Conversation history cleared."}
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _update_history(session_id: str, current_history: List[Dict], user_msg: str, assistant_msg: str) -> None:
-    """Append the new user/assistant turn to conversation history."""
+    """Append the new user/assistant turn to conversation history and persist to disk."""
     updated = current_history + [
         {"role": "user", "content": user_msg},
         {"role": "assistant", "content": assistant_msg},
     ]
     _conversation_history[session_id] = updated
+    _save_history()
 
 
 def _build_citations(chunks: List[Dict]) -> List[Citation]:
