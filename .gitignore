@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Environment
+.env
+.env.local
+*.local
+
+# Data (generated at runtime)
+backend/chroma_data/
+backend/pdf_registry.json
+
+# Node
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# OS
+.DS_Store
+*.swp
+
+# IDE
+.vscode/
+.idea/
+Task.md
+backend/models/__init__.py
+backend/venv/
