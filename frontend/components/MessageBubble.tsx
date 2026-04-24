@@ -186,8 +186,13 @@ export default function MessageBubble({
         {/* Out-of-scope badge (no citations) */}
         {isRefusal && !hasCitations && (
           <div className="refusal-badge">
-            <ShieldOff size={10} />
-            Out of scope — not found in PDF
+            <span className="refusal-badge-icon">
+              <ShieldOff size={11} />
+            </span>
+            <span className="refusal-badge-dot" />
+            <span>Out of scope</span>
+            <span className="refusal-badge-sep">·</span>
+            <span className="refusal-badge-sub">No relevant content found in PDF</span>
           </div>
         )}
       </div>
