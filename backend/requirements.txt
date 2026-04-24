@@ -3,10 +3,10 @@ uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
 PyMuPDF>=1.24.0
 chromadb>=0.5.0
-sentence-transformers>=3.0.0
+huggingface-hub>=0.24.0
 groq>=0.11.0
 llama-index-core>=0.11.0
-llama-index-embeddings-huggingface>=0.3.0
+# huggingface_hub (listed above) provides InferenceClient used for HF Inference API
 python-dotenv>=1.0.0
 pydantic>=2.9.0
 numpy

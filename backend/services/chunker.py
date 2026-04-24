@@ -1,21 +1,21 @@
 """
 Semantic chunking using LlamaIndex's SemanticSplitterNodeParser.
 Chunks are created per-page so each chunk retains exact page metadata for citations.
-Uses the shared embedding singleton from services/embedder.py.
+Uses the HF Inference API embedding from services/embedder.py (no local model loading).
 """
 from llama_index.core import Document
 from llama_index.core.node_parser import SemanticSplitterNodeParser
 import fitz  # PyMuPDF
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import logging
 
 logger = logging.getLogger(__name__)
 
-_splitter: SemanticSplitterNodeParser | None = None
+_splitter: Optional[SemanticSplitterNodeParser] = None
 
 
 def get_splitter() -> SemanticSplitterNodeParser:
-    """Return a singleton SemanticSplitterNodeParser."""
+    """Return a singleton SemanticSplitterNodeParser backed by the HF Inference API."""
     global _splitter
     if _splitter is None:
         from services.embedder import get_embed_model
@@ -25,7 +25,7 @@ def get_splitter() -> SemanticSplitterNodeParser:
             breakpoint_percentile_threshold=95,
             embed_model=embed_model,
         )
-        logger.info("SemanticSplitterNodeParser initialized.")
+        logger.info("SemanticSplitterNodeParser initialised (HF Inference API).")
     return _splitter
 
 
