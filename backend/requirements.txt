@@ -15,6 +15,8 @@ langchain-community>=0.3.0
 unstructured[pdf]>=0.16.0
 # Observability — LangSmith tracing
 langsmith>=0.7.0
+# SSL certificates (fixes NLTK/HF download issues on macOS and some Linux envs)
+certifi>=2024.0.0
 # Multi-query retrieval
 langchain
 langchain-groq
