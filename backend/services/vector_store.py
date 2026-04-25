@@ -8,6 +8,8 @@ import os
 from typing import List, Dict, Any, Optional
 import logging
 
+from langsmith import traceable
+
 logger = logging.getLogger(__name__)
 
 CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_data")
@@ -55,6 +57,7 @@ def add_chunks(chunks: List[Dict[str, Any]]) -> int:
     return len(chunks)
 
 
+@traceable(name="query_chunks", run_type="retriever")
 def query_chunks(
     query: str,
     pdf_ids: List[str],

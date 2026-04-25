@@ -7,6 +7,8 @@ from typing import List, Dict
 import os
 import logging
 
+from langsmith import traceable
+
 logger = logging.getLogger(__name__)
 
 _client: Groq | None = None
@@ -53,6 +55,7 @@ def get_client() -> Groq:
     return _client
 
 
+@traceable(name="generate_response", run_type="llm")
 def generate_response(
     query: str,
     context_chunks: List[Dict],

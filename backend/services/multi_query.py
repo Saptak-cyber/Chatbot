@@ -13,6 +13,8 @@ from __future__ import annotations
 import logging
 from typing import List, Dict, Any, Optional
 
+from langsmith import traceable
+
 logger = logging.getLogger(__name__)
 
 # Prompt sent to the LLM to generate query variants
@@ -26,6 +28,7 @@ one per line, with no numbering, bullets, or extra commentary.
 Original question: {query}"""
 
 
+@traceable(name="generate_query_variants", run_type="llm")
 def _generate_variants(query: str, n: int = 3) -> List[str]:
     """
     Use Groq Llama 3.3 70B to generate `n` alternative phrasings of `query`.
@@ -58,6 +61,7 @@ def _generate_variants(query: str, n: int = 3) -> List[str]:
         return [query]
 
 
+@traceable(name="multi_query_retrieve", run_type="retriever")
 def multi_query_retrieve(
     query: str,
     pdf_ids: List[str],
