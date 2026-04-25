@@ -10,6 +10,9 @@ llama-index-core>=0.11.0
 python-dotenv>=1.0.0
 pydantic>=2.9.0
 numpy
+# High-quality PDF extraction (tables, multi-column layouts)
+langchain-community>=0.3.0
+unstructured[pdf]>=0.16.0
 # Multi-query retrieval
 langchain
 langchain-groq
