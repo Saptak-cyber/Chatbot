@@ -18,6 +18,7 @@ env/
 # Data (generated at runtime)
 backend/chroma_data/
 backend/pdf_registry.json
+backend/chat_history.json
 
 # Node
 frontend/node_modules/

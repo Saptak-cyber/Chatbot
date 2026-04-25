@@ -10,3 +10,7 @@ llama-index-core>=0.11.0
 python-dotenv>=1.0.0
 pydantic>=2.9.0
 numpy
+# Multi-query retrieval
+langchain
+langchain-groq
+langchain-chroma

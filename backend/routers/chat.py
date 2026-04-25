@@ -11,7 +11,7 @@ import logging
 import os
 from fastapi import APIRouter, HTTPException
 from models.schemas import ChatRequest, ChatResponse, Citation
-from services.vector_store import query_chunks
+from services.multi_query import multi_query_retrieve
 from services.llm import generate_response
 from typing import Dict, List
 
@@ -81,16 +81,18 @@ async def chat(request: ChatRequest):
     # Limit to last MAX_HISTORY_TURNS exchanges
     recent_history = history[-(MAX_HISTORY_TURNS * 2):]
 
-    # Query ChromaDB for relevant chunks (min_score threshold applied inside)
+    # Multi-query retrieval: LLM generates query variants → parallel ChromaDB
+    # searches → deduplicated, scored, and threshold-filtered chunks.
+    # Falls back to direct vector search if LLM variant generation fails.
     try:
-        chunks = query_chunks(
+        chunks = multi_query_retrieve(
             query=request.message,
             pdf_ids=request.active_pdf_ids,
             top_k=8,
             min_score=0.20,
         )
     except Exception as e:
-        logger.error(f"Vector store query failed: {e}")
+        logger.error(f"Retrieval failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve relevant context.")
 
     # ── Deterministic out-of-scope refusal ────────────────────────────────────
