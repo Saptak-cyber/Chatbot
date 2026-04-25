@@ -1,22 +1,14 @@
 """
 Semantic chunking using LlamaIndex's SemanticSplitterNodeParser.
 
-Strategy: page-scoped semantic chunking with three enhancements:
+Strategy: page-scoped semantic chunking with two enhancements:
 
-  1. High-quality text extraction via UnstructuredPDFLoader (hi_res strategy)
-     LangChain's UnstructuredPDFLoader is used as the primary extraction engine.
-     It correctly handles:
-       • Multi-column layouts   (reads columns in proper left-to-right order)
-       • Tables                 (reconstructed as readable text, not garbled)
-       • Headers/footers        (identified and labelled by element type)
-     Falls back to PyMuPDF page.get_text() if unstructured is unavailable.
-
-  2. Cross-page tail overlap
+  1. Cross-page tail overlap
      The last PAGE_OVERLAP_SENTENCES sentences of page N are prepended to
      page N+1 before chunking so paragraphs that straddle a page break are
      captured in a single coherent chunk.
 
-  3. Contextual header injection  (Anthropic-style contextual retrieval)
+  2. Contextual header injection  (Anthropic-style contextual retrieval)
      Before each chunk is embedded, a short structured header is prepended:
 
        Document: report.pdf | Section: Introduction | Page: 3
@@ -33,13 +25,10 @@ Uses the HF Inference API embedding from services/embedder.py (no local model).
 """
 from __future__ import annotations
 
-import os
 import re
-import tempfile
-from collections import defaultdict
 from llama_index.core import Document
 from llama_index.core.node_parser import SemanticSplitterNodeParser
-import fitz  # PyMuPDF — kept for heading detection and fallback extraction
+import fitz  # PyMuPDF
 from typing import List, Dict, Any, Optional
 import logging
 
@@ -155,65 +144,6 @@ def _build_context_header(pdf_name: str, page_number: int, section: str) -> str:
     return " | ".join(parts)
 
 
-def _extract_pages_unstructured(pdf_bytes: bytes) -> Optional[Dict[int, str]]:
-    """
-    Extract text from PDF using LangChain's UnstructuredPDFLoader (hi_res strategy).
-
-    Returns a dict mapping 1-indexed page_number → extracted text string,
-    or None if unstructured is not available (caller falls back to PyMuPDF).
-
-    Advantages over page.get_text():
-      • Multi-column layouts are read in correct left-to-right, top-to-bottom order
-      • Tables are reconstructed as readable text rows instead of garbled characters
-      • Element types (Title, NarrativeText, Table, ListItem) are labelled,
-        so table content is prefixed with "Table:" to help the LLM identify it
-    """
-    try:
-        from langchain_community.document_loaders import UnstructuredPDFLoader
-    except ImportError:
-        logger.warning("langchain-community not installed — falling back to PyMuPDF extraction.")
-        return None
-
-    tmp_path: Optional[str] = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(pdf_bytes)
-            tmp_path = tmp.name
-
-        loader = UnstructuredPDFLoader(
-            tmp_path,
-            mode="elements",
-            strategy="hi_res",
-        )
-        elements = loader.load()
-    except Exception as e:
-        logger.warning(f"UnstructuredPDFLoader failed — falling back to PyMuPDF: {e}")
-        return None
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-
-    # Group element text by page number
-    page_texts: Dict[int, List[str]] = defaultdict(list)
-    for el in elements:
-        page_num = el.metadata.get("page_number")
-        if page_num is None:
-            continue
-        category = el.metadata.get("category", "")
-        text = el.page_content.strip()
-        if not text:
-            continue
-        # Prefix table elements so the LLM knows they're tabular data
-        if category == "Table":
-            text = f"Table:\n{text}"
-        page_texts[int(page_num)].append(text)
-
-    if not page_texts:
-        return None
-
-    return {page: "\n\n".join(parts) for page, parts in page_texts.items()}
-
-
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def extract_and_chunk_pdf(
@@ -245,15 +175,6 @@ def extract_and_chunk_pdf(
 
     logger.info(f"Processing PDF '{pdf_name}' ({total_pages} pages)...")
 
-    # ── Primary extraction: UnstructuredPDFLoader (hi_res) ───────────────────
-    # Handles tables and multi-column layouts correctly.
-    # Falls back to PyMuPDF page.get_text() per page if unavailable.
-    unstructured_pages = _extract_pages_unstructured(pdf_bytes)
-    if unstructured_pages:
-        logger.info(f"Using UnstructuredPDFLoader (hi_res) for '{pdf_name}'.")
-    else:
-        logger.info(f"Using PyMuPDF fallback extraction for '{pdf_name}'.")
-
     prev_page_tail: str = ""   # cross-page overlap context
     active_section: str = ""   # last detected section heading (persists across pages)
 
@@ -261,19 +182,13 @@ def extract_and_chunk_pdf(
         page = doc[page_num]
         page_number_1indexed = page_num + 1
 
-        # Use Unstructured output if available, otherwise fall back to PyMuPDF
-        if unstructured_pages:
-            text = unstructured_pages.get(page_number_1indexed, "").strip()
-        else:
-            text = page.get_text().strip()
+        text = page.get_text().strip()
 
         if not text or len(text) < 30:
             prev_page_tail = ""
             continue
 
         # ── 1. Update active section heading ─────────────────────────────────
-        # Always use PyMuPDF for heading detection (font size analysis) since
-        # Unstructured doesn't expose font metadata directly.
         page_headings = _extract_headings(page)
         if page_headings:
             active_section = page_headings[0]
