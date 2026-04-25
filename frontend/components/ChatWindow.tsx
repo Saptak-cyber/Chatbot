@@ -44,6 +44,24 @@ export default function ChatWindow({
   const hasActivePdfs = activePdfIds.length > 0;
   const canSend = hasActivePdfs && input.trim().length > 0 && !isLoading;
 
+  // Auto-focus textarea on any printable keypress when no other input is focused
+  useEffect(() => {
+    const handleGlobalKey = (e: globalThis.KeyboardEvent) => {
+      // Ignore if already typing in an input, textarea, or contenteditable
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement).isContentEditable) return;
+      // Ignore modifier-only combos (Ctrl+C, Cmd+R, etc.) and special keys
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key.length !== 1) return; // skip Enter, Backspace, ArrowKeys, F-keys…
+      // Only focus if the textarea is enabled
+      if (textareaRef.current && !textareaRef.current.disabled) {
+        textareaRef.current.focus();
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKey);
+    return () => window.removeEventListener('keydown', handleGlobalKey);
+  }, []);
+
   // Restore messages from localStorage on mount
   useEffect(() => {
     const stored = localStorage.getItem(storageKey);
