@@ -4,6 +4,8 @@
 
 A **Retrieval-Augmented Generation (RAG)** web application that lets users upload PDF documents and have grounded, citation-backed conversations with their contents. The system uses a multi-layer defence against hallucination and refuses to answer questions outside the scope of the loaded documents.
 
+**Conversational behaviour** is handled in three ways: (1) **query rewriting** so short follow-ups like “repeat again” become retrievable standalone questions, (2) **rolling conversation summaries** in the database after every five user/assistant exchanges to bound context while preserving long-horizon memory, and (3) **Neon PostgreSQL** as the source of truth for chat history (replacing local JSON files).
+
 ---
 
 ## 2. Architecture Diagram
@@ -29,17 +31,16 @@ A **Retrieval-Augmented Generation (RAG)** web application that lets users uploa
                      │        FastAPI Backend       │
                      │         (Render.com)         │
                      │                             │
-                     │  ┌─────────┐  ┌──────────┐ │
-                     │  │  PDFs   │  │  Chat    │ │
-                     │  │ Router  │  │ Router   │ │
-                     │  └────┬────┘  └─────┬────┘ │
+                     │  ┌─────────┐  ┌──────────┐   │
+                     │  │  PDFs   │  │  Chat    │   │
+                     │  │ Router  │  │ Router   │   │
+                     │  └────┬────┘  └─────┬────┘   │
                      │       │             │       │
-                     │  ┌────▼─────────────▼────┐  │
-                     │  │       Services         │  │
-                     │  │  Chunker │ Embedder    │  │
-                     │  │  VectorStore │ LLM     │  │
-                     │  │  MultiQuery             │  │
-                     │  └────┬─────────────┬────┘  │
+                     │  ┌────▼─────────────▼────┐   │
+                     │  │       Services         │   │
+                     │  │  Chunker │ Embedder    │   │
+                     │  │  VectorStore │ LLM    │   │
+                     │  └────┬─────────────┬────┘   │
                      └───────┼─────────────┼────────┘
                              │             │
               ┌──────────────▼──┐    ┌─────▼──────────────┐
@@ -54,11 +55,13 @@ A **Retrieval-Augmented Generation (RAG)** web application that lets users uploa
               │  PDF Registry     │   │  │ (MiniLM emb) │  │
               │  (JSON file)      │   │  └──────────────┘  │
               └───────────────────┘   │  ┌──────────────┐  │
-                                      │  │ Unstructured │  │
-              ┌───────────────────┐   │  │ (hi_res PDF) │  │
-              │  Chat History     │   │  └──────────────┘  │
-              │  (JSON file)      │   └────────────────────┘
-              └───────────────────┘
+                                      │  │ LangSmith    │  │
+              ┌───────────────────┐   │  │ (tracing)    │  │
+              │  Neon PostgreSQL  │   │  └──────────────┘  │
+              │  chat_messages    │   └────────────────────┘  │
+              │  (LangChain     │                             │
+              │   history)      │                             │
+              └───────────────────┘                             │
 ```
 
 ---
@@ -77,11 +80,12 @@ A **Retrieval-Augmented Generation (RAG)** web application that lets users uploa
 | `lib/types.ts` | Shared TypeScript interfaces (`PDFInfo`, `Message`, `Citation`, `ChatResponse`) |
 
 **State model:**
+
 - `pdfs` — list of uploaded PDFs (fetched from `/api/pdfs` on load)
 - `selectedPdfIds` — checkbox selection in sidebar
 - `activePdfIds` — PDFs currently scoped for RAG (set on "Load Selected")
 - `messages` — conversation history (persisted in `localStorage` per session)
-- `sessionId` — UUID persisted in `sessionStorage`; ties chat history to backend
+- `sessionId` — UUID (`uuidv4`) persisted in `sessionStorage`; must be a valid UUID for backend chat history
 
 **UX enhancement:** A global `keydown` listener auto-focuses the chat textarea when the user presses any printable key while no other input is focused, so typing immediately starts composing a message without clicking.
 
@@ -96,18 +100,25 @@ A **Retrieval-Augmented Generation (RAG)** web application that lets users uploa
 | `pdfs.py` | `POST /api/upload` | Ingest, chunk, embed, and store a PDF |
 | | `GET /api/pdfs` | Return list of all registered PDFs |
 | | `DELETE /api/pdfs/{id}` | Remove PDF vectors from Chroma and registry entry |
-| `chat.py` | `POST /api/chat` | Multi-query RAG: expand → retrieve → filter → respond |
-| | `DELETE /api/chat/{session_id}` | Clear conversation history for a session |
+| `chat.py` | `POST /api/chat` | Query rewrite → vector retrieve → grounded response; persist turn; optional rolling summary |
+| | `DELETE /api/chat/{session_id}` | Clear conversation history for a session in Neon |
 
 #### Services
 
 | Service | Technology | Role |
 |---|---|---|
-| `chunker.py` | UnstructuredPDFLoader + PyMuPDF + LlamaIndex `SemanticSplitterNodeParser` | High-quality text extraction (tables, multi-column); semantic chunking per page with cross-page overlap and contextual header injection |
+| `chunker.py` | PyMuPDF + LlamaIndex `SemanticSplitterNodeParser` | Page text extraction; semantic chunking per page with cross-page overlap and contextual header injection |
 | `embedder.py` | HuggingFace Inference API (`all-MiniLM-L6-v2`) | Dense vector embeddings for chunks and queries |
-| `vector_store.py` | ChromaDB (persistent) | Store and retrieve chunk embeddings with cosine similarity; min-score threshold filtering |
-| `multi_query.py` | Groq + ChromaDB | Generate query variants via LLM; parallel ChromaDB searches; deduplicate and re-score results |
+| `vector_store.py` | ChromaDB (persistent) | Store and retrieve chunk embeddings with cosine similarity; `min_score` threshold filtering |
 | `llm.py` | Groq API (`llama-3.3-70b-versatile`) | Generate strictly-grounded answers from retrieved context with inline citations |
+
+#### Conversation & memory (`chat.py`)
+
+| Mechanism | Purpose |
+|---|---|
+| **PostgresChatMessageHistory** (`langchain-postgres`) | Persist user/assistant turns in Neon (`chat_messages` table); `session_id` is the chat UUID |
+| **Query rewriting** (Groq, LangSmith `rewrite_query`) | When history exists, rewrite follow-ups (“repeat again”, “elaborate”) into standalone questions used **only for retrieval**; the user’s original text is still sent to the answer LLM |
+| **Rolling summarization** (Groq, LangSmith `summarize_conversation`) | After each turn, if there are more than five exchanges (10 messages) of *verbatim* conversation, the oldest messages are summarized into a single `SystemMessage`, merged with any prior summary, and only the last five exchanges are kept verbatim |
 
 ---
 
@@ -123,10 +134,7 @@ PDFSidebar → POST /api/upload (multipart)
       │
       ▼
 Backend: chunker.py
-  ├─ UnstructuredPDFLoader (hi_res) extracts text page-by-page
-  │    ├─ Tables reconstructed as readable text (not garbled)
-  │    └─ Multi-column layouts read in correct reading order
-  │    [fallback: PyMuPDF page.get_text() if unstructured unavailable]
+  ├─ PyMuPDF page.get_text() extracts text page-by-page
   │
   ├─ PyMuPDF font-size analysis detects section headings per page
   │
@@ -158,74 +166,75 @@ Response: { pdf_id, name, page_count, chunk_count }
 
 ```
 User types message → POST /api/chat
-  { query, session_id, active_pdf_ids }
+  { message, session_id, active_pdf_ids }
       │
       ▼
-multi_query.py — Query Expansion
-  ├─ Groq LLaMA 3.3 70B generates 3 alternative phrasings of the query
-  │     e.g. "what is sga" →
-  │          "What does SGA stand for?"
-  │          "Explain the concept of SGA"
-  │          "Define SGA as described in the document"
-  │
-  ├─ ChromaDB searched independently for each variant
-  │    (filter: active_pdf_ids, top_k=8 per variant)
-  │
-  ├─ Results deduplicated by chunk text content
-  │
-  └─ All unique chunks re-scored against the ORIGINAL query
-       (so ranking and confidence reflect user's actual intent)
+Load history from Neon (PostgresChatMessageHistory)
+  ├─ Optional first SystemMessage = rolling summary of older conversation
+  └─ Human/AI messages = recent verbatim window (≤ 5 exchanges after compression)
+      │
+      ▼
+Convert to role/content dicts for the answer LLM (summary injected as synthetic user/assistant pair)
+      │
+      ▼
+Query rewriting (if history non-empty)
+  └─ Groq: follow-up → standalone query for retrieval only
+      │
+      ▼
+vector_store.query_chunks(retrieval_query, …)
+  ├─ Embed query; ChromaDB cosine similarity
+  ├─ Filter: active_pdf_ids, top_k=8, min_score=0.20
+  └─ Returns ranked chunks with scores
       │
       ▼
 Layer 1 — Hard Refusal (min_score threshold)
-  ├─ If ALL chunks score < 0.20 cosine similarity → immediate refusal
-  │    is_grounded=False, no LLM call made
-  └─ Otherwise pass filtered chunks to LLM
+  ├─ If no chunks pass threshold → immediate refusal; is_grounded=False; no answer LLM
+  └─ Otherwise pass chunks to answer LLM
       │
       ▼
-Build prompt:
+Build prompt (llm.py)
   - System: strict grounding rules, refusal instructions, citation format
-  - History: last 5 turns loaded from disk (chat_history.json)
+  - History: full dict list (summary + recent turns)
   - Context: retrieved chunks with [Excerpt N | pdf — Page X] headers
-  - User: current query
+  - User: original message + CONTEXT + “USER QUESTION:”
       │
       ▼
-Groq LLaMA 3.3 70B → generates grounded answer with inline citations
+Groq LLaMA 3.3 70B → grounded answer with inline citations
       │
       ▼
-Layer 2 — Soft Refusal (LLM-level detection)
-  ├─ If response contains "cannot find an answer" → is_grounded=False
-  └─ Citations stripped from refusal responses
+Layer 2 — Soft Refusal
+  ├─ If response contains "cannot find an answer" → is_grounded=False; strip citations
+      │
+      ▼
+Persist turn to Neon (add_user_message, add_ai_message)
+      │
+      ▼
+Rolling summarization (_maybe_summarize)
+  └─ If verbatim turn count > 5: summarize oldest messages into SystemMessage; keep last 5 exchanges
       │
       ▼
 Response: {
-  answer,
+  response,
   is_grounded: bool,
-  retrieval_score: float,        ← max cosine similarity of retrieved chunks
-  citations: [{
-    pdf_name, page_number,
-    section,                     ← active heading when chunk was indexed
-    score                        ← best chunk similarity on that page
-  }]
+  retrieval_score: float,
+  sources_used: [{ pdf_name, page_number, section?, score? }]
 }
       │
       ▼
-Frontend: MessageBubble renders answer + citation chips
-  ├─ Grounded: green citation bar with page, §section, High/Medium/Low label
-  └─ Refused:  amber refusal bubble + "Out of scope" badge
+Frontend: MessageBubble — citations, refusal badge, match %
 ```
 
 ---
 
 ## 5. Anti-Hallucination Architecture
 
-The system uses a **three-layer defence** against hallucination:
-
 | Layer | Where | Mechanism |
 |---|---|---|
-| **Layer 0** | Chunking (index time) | Contextual header injection encodes document position into every chunk embedding; cross-page overlap prevents mid-paragraph splits |
-| **Layer 1** | `vector_store.py` (retrieval) | Cosine similarity threshold `min_score=0.20` — chunks below threshold are discarded before the LLM sees them; zero qualifying chunks → immediate deterministic refusal |
-| **Layer 2** | `llm.py` (generation) | Strict system prompt with 7 explicit rules; LLM instructed to refuse when retrieved context doesn't actually answer the question; refusal phrase detected in response and flagged as `is_grounded=False` |
+| **Layer 0** | Chunking (index time) | Contextual header injection encodes document position into embeddings; cross-page overlap reduces mid-paragraph splits |
+| **Layer 1** | `vector_store.py` (retrieval) | Cosine similarity threshold `min_score=0.20`; no qualifying chunks → deterministic refusal without calling the answer LLM |
+| **Layer 2** | `llm.py` (generation) | Strict system prompt; LLM must refuse when context does not answer the question; refusal phrase sets `is_grounded=False` |
+
+Query rewriting only affects **retrieval**; answers must still be grounded in retrieved excerpts.
 
 ---
 
@@ -233,18 +242,19 @@ The system uses a **three-layer defence** against hallucination:
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| PDF text extraction | `UnstructuredPDFLoader` (hi_res) → PyMuPDF fallback | Correctly handles tables and multi-column layouts; fallback ensures reliability |
-| Chunking strategy | Page-scoped semantic (LlamaIndex) + cross-page overlap | Preserves contextual coherence; exact page metadata for citations; overlap bridges page-break paragraphs |
-| Contextual headers | Injected before embedding (Anthropic-style) | Encodes document position into vector; improves retrieval for section-reference queries |
-| Retrieval strategy | Multi-query expansion (3 variants + original) | Dramatically improves recall for short/acronym/vague queries that a single embedding misses |
-| Similarity threshold | `min_score=0.20` cosine | Hard filter before LLM call; prevents noise chunks from reaching generation; deterministic refusal for off-topic queries |
-| Embedding model | `all-MiniLM-L6-v2` via HF Inference API | Lightweight, strong semantic quality; no local GPU needed |
-| LLM | Groq `llama-3.3-70b-versatile` | Fast inference, free tier, strong instruction following |
-| Vector store | ChromaDB (persistent local) | Zero-config, embedded, cosine similarity |
-| PDF metadata | JSON file registry | Lightweight; avoids a full SQL DB for simple key-value mapping |
-| Chat history | Disk-persisted JSON (`chat_history.json`) | Survives server restarts; stays in sync with frontend `localStorage` log |
-| Session identity | UUID in `sessionStorage` | Per-tab isolation, no user auth required |
-| Citation granularity | Page number + section heading + confidence score | Satisfies evaluation requirement for page/section reference; confidence score demonstrates grounding quality |
+| PDF text extraction | PyMuPDF `page.get_text()` | Simple, reliable; no extra heavy PDF stack in production |
+| Chunking strategy | Page-scoped semantic (LlamaIndex) + cross-page overlap | Coherent chunks; exact page metadata for citations |
+| Contextual headers | Injected before embedding | Encodes document position in vectors; helps section-style queries |
+| Follow-up retrieval | LLM query rewrite + single `query_chunks` call | Fixes “repeat again” / anaphoric queries without multi-query expansion |
+| Similarity threshold | `min_score=0.20` cosine | Hard filter before generation; reduces noise and off-topic answers |
+| Long conversations | Rolling summary + last 5 exchanges verbatim | Bounded tokens; LangSmith traces summarization |
+| Embedding model | `all-MiniLM-L6-v2` via HF Inference API | No local GPU; good quality/size tradeoff |
+| LLM | Groq `llama-3.3-70b-versatile` | Fast, strong instruction following |
+| Vector store | ChromaDB (persistent local) | Embedded, cosine similarity |
+| PDF metadata | `pdf_registry.json` | Lightweight metadata without a second DB for PDFs |
+| Chat history | Neon PostgreSQL + `langchain-postgres` | Durable, scalable; UUID session keys |
+| Observability | LangSmith (`@traceable` on rewrite, summarize, LLM, retriever) | Debug RAG and conversation pipeline in one project |
+| Session identity | UUID in `sessionStorage` | Matches Neon / LangChain session id requirements |
 
 ---
 
@@ -257,26 +267,30 @@ The system uses a **three-layer defence** against hallucination:
                 │  (static SSR) │        │  port $PORT       │
                 └───────────────┘        └────────┬─────────┘
                                                   │
-                                         ┌────────▼──────────┐
-                                         │ Persistent Volume  │
-                                         │  chroma_data/      │
-                                         │  pdf_registry.json │
-                                         │  chat_history.json │
-                                         └────────────────────┘
+                     ┌────────────────────────────┼────────────────────────┐
+                     │                            │                        │
+              ┌──────▼──────┐              ┌───────▼────────┐     ┌─────────▼─────────┐
+              │ Persistent  │              │ pdf_registry   │     │ Neon PostgreSQL   │
+              │ Volume      │              │ .json          │     │ (chat_messages)   │
+              │ chroma_data/│              └────────────────┘     │ NEON_DATABASE_URL │
+              └─────────────┘                                      └───────────────────┘
 ```
 
-- **Frontend** — deployed to **Vercel**; `NEXT_PUBLIC_API_URL` set to the Render backend URL.
-- **Backend** — deployed to **Render** as a Python web service; `GROQ_API_KEY` and `HF_TOKEN` set as environment secrets.
-- **CORS** — backend `ALLOWED_ORIGINS` env var restricts access to the Vercel domain in production.
+- **Frontend** — Vercel; `NEXT_PUBLIC_API_URL` points at the Render backend.
+- **Backend** — Render; secrets: `GROQ_API_KEY`, `HF_TOKEN`, `NEON_DATABASE_URL`, optional `LANGCHAIN_API_KEY` / LangSmith vars, `ALLOWED_ORIGINS`.
+- **Build** — `backend/build.sh` installs `certifi` and `requirements.txt` (no NLTK bootstrap required for current PDF path).
+- **CORS** — `ALLOWED_ORIGINS` should list the Vercel app origin in production.
 
 ---
 
 ## 8. External Dependencies
 
-| Service | Purpose | Env Var |
+| Service | Purpose | Env Var(s) |
 |---|---|---|
-| Groq API | LLM inference — answer generation + query variant generation | `GROQ_API_KEY` |
-| HuggingFace Inference API | Sentence embeddings (`all-MiniLM-L6-v2`) | `HF_TOKEN` |
+| Groq API | Answer generation, query rewriting, conversation summarization | `GROQ_API_KEY` |
+| HuggingFace Inference API | Embeddings (`all-MiniLM-L6-v2`) | `HF_TOKEN` |
+| Neon | PostgreSQL for `chat_messages` (LangChain history) | `NEON_DATABASE_URL` |
+| LangSmith | Traces (rewrite, summarize, `generate_response`, `query_chunks`) | `LANGCHAIN_API_KEY`, `LANGCHAIN_TRACING_V2`, `LANGCHAIN_PROJECT` (optional) |
 
 ---
 
@@ -284,13 +298,13 @@ The system uses a **three-layer defence** against hallucination:
 
 | Layer | Technology |
 |---|---|
-| Frontend | Next.js 14, React 18, TypeScript, lucide-react |
-| Backend | FastAPI, Python 3.14, uvicorn |
-| PDF Extraction | `unstructured[pdf]` (hi_res) via `langchain-community`, PyMuPDF fallback |
-| Chunking | PyMuPDF (heading detection), LlamaIndex `SemanticSplitterNodeParser` |
+| Frontend | Next.js 14, React 18, TypeScript, lucide-react, uuid |
+| Backend | FastAPI, Python, uvicorn |
+| PDF & chunking | PyMuPDF, LlamaIndex `SemanticSplitterNodeParser` |
 | Embeddings | HuggingFace Inference API (`all-MiniLM-L6-v2`) |
-| Multi-Query | Native Groq + ChromaDB (no LangChain dependency) |
-| Vector Store | ChromaDB (persistent) |
+| Vector store | ChromaDB (persistent) |
+| Conversation DB | Neon PostgreSQL, `langchain-postgres` (`PostgresChatMessageHistory`) |
 | LLM | Groq `llama-3.3-70b-versatile` |
-| Frontend Hosting | Vercel |
-| Backend Hosting | Render |
+| Observability | LangSmith + `@traceable` |
+| Frontend hosting | Vercel |
+| Backend hosting | Render |
