@@ -60,7 +60,7 @@ def generate_response(
     query: str,
     context_chunks: List[Dict],
     history: List[Dict],
-) -> str:
+) -> tuple[str, bool]:
     """
     Generate a strictly-grounded response using Groq Llama 3.3 70B.
     History contains clean user/assistant pairs (no context embedded).
@@ -91,17 +91,38 @@ def generate_response(
 
 USER QUESTION: {query}
 
-Remember: Answer ONLY from the context above. Cite page numbers and document names. If the context doesn't fully answer the question, explicitly state what is missing."""
+IMPORTANT: Start your response with EXACTLY ONE of these tags:
+- [GROUNDED] if you can answer from the context
+- [REFUSED] if the context does not contain the answer
+
+Then provide your response with citations. Remember: Answer ONLY from the context above. Cite page numbers and document names. If the context doesn't fully answer the question, explicitly state what is missing."""
 
     messages.append({"role": "user", "content": user_content})
 
     logger.info(f"Calling Groq with {len(context_chunks)} context chunks, {len(history)} history messages.")
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="llama-3.1-8b-instant",
         messages=messages,
         temperature=0.0,  # Changed from 0.1 to 0.0 for maximum consistency
         max_tokens=1536,
     )
 
-    return response.choices[0].message.content
+    full_text = (response.choices[0].message.content or "").strip()
+    refusal_patterns = [
+        "cannot find an answer",
+        "does not contain",
+        "not addressed in",
+        "no information about",
+        "not covered in",
+        "outside the scope",
+    ]
+
+    if full_text.startswith("[GROUNDED]"):
+        return full_text.replace("[GROUNDED]", "", 1).strip(), True
+    if full_text.startswith("[REFUSED]"):
+        return full_text.replace("[REFUSED]", "", 1).strip(), False
+
+    # Fallback for rare non-compliant outputs.
+    is_grounded = not any(pattern in full_text.lower() for pattern in refusal_patterns)
+    return full_text, is_grounded

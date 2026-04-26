@@ -93,7 +93,7 @@ def _summarize_messages(messages: list, existing_summary: str = "") -> str:
 
     client = get_client()
     resp = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="llama-3.1-8b-instant",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
         max_tokens=512,
@@ -179,7 +179,7 @@ def _rewrite_query(query: str, history: List[Dict]) -> str:
         from services.llm import get_client
         client = get_client()
         resp = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=150,
@@ -267,7 +267,7 @@ async def chat(request: ChatRequest):
 
     # Generate grounded response via Groq
     try:
-        response_text = generate_response(
+        response_text, is_grounded = generate_response(
             query=request.message,
             context_chunks=chunks,
             history=recent_history,
@@ -275,18 +275,6 @@ async def chat(request: ChatRequest):
     except Exception as e:
         logger.error(f"LLM generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"LLM error: {str(e)}")
-
-    # ── Detect LLM-level refusals ─────────────────────────────────────────────
-    # Check for multiple refusal patterns
-    refusal_patterns = [
-        "cannot find an answer",
-        "does not contain",
-        "not addressed in",
-        "no information about",
-        "not covered in",
-        "outside the scope",
-    ]
-    is_grounded = not any(pattern in response_text.lower() for pattern in refusal_patterns)
 
     # Persist the new turn to Neon
     _persist_turn(request.session_id, request.message, response_text)
