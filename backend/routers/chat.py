@@ -12,7 +12,7 @@ import psycopg
 from contextlib import contextmanager
 from fastapi import APIRouter, HTTPException
 from langchain_postgres import PostgresChatMessageHistory
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langsmith import traceable
 from models.schemas import ChatRequest, ChatResponse, Citation
 from services.vector_store import query_chunks
@@ -51,16 +51,99 @@ def _db_conn() -> Generator[psycopg.Connection, None, None]:
 def _history_to_dicts(lc_history: PostgresChatMessageHistory) -> List[Dict]:
     """Convert stored LangChain BaseMessages to plain role/content dicts.
 
-    Only the most recent MAX_HISTORY_TURNS exchanges are returned so the
-    Groq context window stays manageable.
+    After summarization, Neon stores at most one SystemMessage (the running
+    summary) followed by the last MAX_HISTORY_TURNS exchanges.  The summary is
+    passed as a synthetic user/assistant pair so every LLM API accepts it.
     """
     result = []
-    for msg in lc_history.messages[-(MAX_HISTORY_TURNS * 2):]:
-        if isinstance(msg, HumanMessage):
+    for msg in lc_history.messages:
+        if isinstance(msg, SystemMessage):
+            # Inject the summary as a user/assistant exchange that all LLMs accept
+            result.append({"role": "user", "content": f"[Summary of our earlier conversation]\n{msg.content}"})
+            result.append({"role": "assistant", "content": "Understood. I have the full context from our earlier conversation."})
+        elif isinstance(msg, HumanMessage):
             result.append({"role": "user", "content": msg.content})
         elif isinstance(msg, AIMessage):
             result.append({"role": "assistant", "content": msg.content})
     return result
+
+
+@traceable(name="summarize_conversation", run_type="llm")
+def _summarize_messages(messages: list, existing_summary: str = "") -> str:
+    """Progressively summarize a list of LangChain BaseMessages using Groq.
+
+    If there is an existing running summary it is extended rather than replaced,
+    so no context is ever permanently lost.
+    """
+    from services.llm import get_client
+
+    conversation_text = "\n".join(
+        f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
+        for m in messages
+    )
+
+    prompt = (
+        "Progressively summarize the lines of conversation provided, adding onto "
+        "the previous summary and returning a new, concise summary that captures "
+        "the key topics, facts discussed, and any important context.\n\n"
+    )
+    if existing_summary:
+        prompt += f"Current summary:\n{existing_summary}\n\n"
+    prompt += f"New lines of conversation:\n{conversation_text}\n\nNew summary:"
+
+    client = get_client()
+    resp = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.0,
+        max_tokens=512,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def _maybe_summarize(session_id: str) -> None:
+    """After MAX_HISTORY_TURNS exchanges accumulate, fold the oldest messages
+    into a running summary stored as a SystemMessage in Neon.
+
+    Storage after summarization:
+        [SystemMessage(summary)]  ← rolling summary of everything before the window
+        [HumanMessage, AIMessage] × MAX_HISTORY_TURNS  ← verbatim recent window
+    """
+    try:
+        with _db_conn() as conn:
+            lc_history = PostgresChatMessageHistory(
+                TABLE_NAME, session_id, sync_connection=conn
+            )
+            all_msgs = lc_history.messages
+            if not all_msgs:
+                return
+
+            # Separate an existing summary from the conversation messages
+            has_summary = isinstance(all_msgs[0], SystemMessage)
+            existing_summary = all_msgs[0].content if has_summary else ""
+            conv_msgs = all_msgs[1:] if has_summary else all_msgs
+
+            # Only compress when we exceed the verbatim window
+            if len(conv_msgs) <= MAX_HISTORY_TURNS * 2:
+                return
+
+            to_summarize = conv_msgs[:-(MAX_HISTORY_TURNS * 2)]
+            to_keep = conv_msgs[-(MAX_HISTORY_TURNS * 2):]
+
+            new_summary = _summarize_messages(to_summarize, existing_summary)
+
+            # Rebuild Neon history: [summary] + recent verbatim window
+            lc_history.clear()
+            lc_history.add_message(SystemMessage(content=new_summary))
+            for msg in to_keep:
+                lc_history.add_message(msg)
+
+            logger.info(
+                f"Session {session_id}: summarized {len(to_summarize)} messages "
+                f"into rolling summary ({len(to_keep)} messages kept verbatim)."
+            )
+    except Exception as e:
+        logger.error(f"Conversation summarization failed for session {session_id}: {e}")
 
 
 @traceable(name="rewrite_query", run_type="llm")
@@ -228,7 +311,7 @@ async def clear_history(session_id: str):
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _persist_turn(session_id: str, user_msg: str, assistant_msg: str) -> None:
-    """Append the user/assistant turn to Neon via LangChain history object."""
+    """Append the user/assistant turn to Neon, then compress if needed."""
     try:
         with _db_conn() as conn:
             lc_history = PostgresChatMessageHistory(
@@ -238,6 +321,10 @@ def _persist_turn(session_id: str, user_msg: str, assistant_msg: str) -> None:
             lc_history.add_ai_message(assistant_msg)
     except Exception as e:
         logger.error(f"Failed to persist conversation turn: {e}")
+        return
+
+    # Summarize old messages once the window is exceeded (non-fatal if it fails)
+    _maybe_summarize(session_id)
 
 
 def _build_citations(chunks: List[Dict]) -> List[Citation]:
