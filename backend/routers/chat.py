@@ -62,6 +62,52 @@ def _history_to_dicts(lc_history: PostgresChatMessageHistory) -> List[Dict]:
     return result
 
 
+def _rewrite_query(query: str, history: List[Dict]) -> str:
+    """Rewrite a follow-up query into a standalone query using conversation history.
+
+    Converts ambiguous follow-ups like "repeat again", "elaborate on that", or
+    "what about the second point?" into specific, self-contained queries that
+    the vector store can match against PDF content.
+
+    If there is no history, or the LLM call fails, the original query is returned
+    unchanged so retrieval always proceeds.
+    """
+    if not history:
+        return query
+
+    # Use the last 2 turns (4 messages) as context — enough without bloating the prompt
+    context_lines = "\n".join(
+        f"{m['role'].upper()}: {m['content'][:400]}" for m in history[-4:]
+    )
+    prompt = (
+        "Given the conversation history below and a follow-up question, rewrite the "
+        "follow-up as a standalone, specific question that can be understood and "
+        "answered without any prior context. If the question is already self-contained "
+        "and specific, return it unchanged.\n"
+        "Return ONLY the rewritten question — no explanation, no quotes.\n\n"
+        f"Conversation history:\n{context_lines}\n\n"
+        f"Follow-up question: {query}\n\n"
+        "Standalone question:"
+    )
+
+    try:
+        from services.llm import get_client
+        client = get_client()
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=150,
+        )
+        rewritten = resp.choices[0].message.content.strip()
+        if rewritten and rewritten.lower() != query.lower():
+            logger.info(f"Query rewritten for retrieval: '{query}' → '{rewritten}'")
+        return rewritten or query
+    except Exception as e:
+        logger.warning(f"Query rewrite failed, using original: {e}")
+        return query
+
+
 # ── Chat endpoint ──────────────────────────────────────────────────────────────
 
 @router.post("/chat", response_model=ChatResponse, summary="Send a message and get a grounded response")
@@ -98,11 +144,15 @@ async def chat(request: ChatRequest):
         logger.error(f"Failed to load conversation history: {e}")
         # Non-fatal: continue without history
 
+    # Rewrite ambiguous follow-up queries into standalone queries for better retrieval.
+    # The original message is still passed to the LLM so the response feels natural.
+    retrieval_query = _rewrite_query(request.message, recent_history)
+
     # Multi-query retrieval: LLM generates query variants → parallel ChromaDB
     # searches → deduplicated, scored, and threshold-filtered chunks.
     try:
         chunks = multi_query_retrieve(
-            query=request.message,
+            query=retrieval_query,
             pdf_ids=request.active_pdf_ids,
             top_k=8,
             min_score=0.20,
