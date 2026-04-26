@@ -1,6 +1,6 @@
 """
 FastAPI application entry point.
-Pre-loads embedding model, chunker, and ChromaDB on startup to avoid cold-start latency.
+Pre-loads embedding model, chunker, and Qdrant client on startup to avoid cold-start latency.
 """
 import logging
 import os
@@ -26,14 +26,14 @@ async def lifespan(app: FastAPI):
     try:
         from services.embedder import get_embed_model
         from services.chunker import get_splitter
-        from services.vector_store import get_collection
+        from services.vector_store import get_client
 
         logger.info("Loading embedding model...")
         get_embed_model()
         logger.info("Loading semantic chunker...")
         get_splitter()
         logger.info("Initializing vector store...")
-        get_collection()
+        get_client()
 
         # Ensure Neon chat_messages table exists (idempotent)
         neon_url = os.getenv("NEON_DATABASE_URL")

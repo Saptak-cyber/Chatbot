@@ -44,8 +44,8 @@ A **Retrieval-Augmented Generation (RAG)** web application that lets users uploa
                      └───────┼─────────────┼────────┘
                              │             │
               ┌──────────────▼──┐    ┌─────▼──────────────┐
-              │   ChromaDB       │    │   External APIs     │
-              │  (local/persist) │    │  ┌──────────────┐  │
+              │   Qdrant Cloud   │    │   External APIs     │
+              │  (managed)       │    │  ┌──────────────┐  │
               │  - Embeddings    │    │  │  Groq API    │  │
               │  - Chunk text    │    │  │ (LLaMA 3.3)  │  │
               │  - Metadata      │    │  └──────────────┘  │
@@ -99,7 +99,7 @@ A **Retrieval-Augmented Generation (RAG)** web application that lets users uploa
 |---|---|---|
 | `pdfs.py` | `POST /api/upload` | Ingest, chunk, embed, and store a PDF |
 | | `GET /api/pdfs` | Return list of all registered PDFs |
-| | `DELETE /api/pdfs/{id}` | Remove PDF vectors from Chroma and registry entry |
+| | `DELETE /api/pdfs/{id}` | Remove PDF vectors from Qdrant and registry entry |
 | `chat.py` | `POST /api/chat` | Query rewrite → vector retrieve → grounded response; persist turn; optional rolling summary |
 | | `DELETE /api/chat/{session_id}` | Clear conversation history for a session in Neon |
 
@@ -109,7 +109,7 @@ A **Retrieval-Augmented Generation (RAG)** web application that lets users uploa
 |---|---|---|
 | `chunker.py` | PyMuPDF + LlamaIndex `SemanticSplitterNodeParser` | Page text extraction; semantic chunking per page with cross-page overlap and contextual header injection |
 | `embedder.py` | HuggingFace Inference API (`all-MiniLM-L6-v2`) | Dense vector embeddings for chunks and queries |
-| `vector_store.py` | ChromaDB (persistent) | Store and retrieve chunk embeddings with cosine similarity; `min_score` threshold filtering |
+| `vector_store.py` | Qdrant Cloud | Store and retrieve chunk embeddings with cosine similarity; `min_score` threshold filtering |
 | `llm.py` | Groq API (`llama-3.3-70b-versatile`) | Generate strictly-grounded answers from retrieved context with inline citations |
 
 #### Conversation & memory (`chat.py`)
@@ -152,7 +152,7 @@ Backend: embedder.py
       │
       ▼
 Backend: vector_store.py
-  └─ ChromaDB stores (chunk_text, embedding,
+  └─ Qdrant stores (chunk_text, embedding,
        {pdf_id, pdf_name, page_number, chunk_index, section})
       │
       ▼
@@ -182,7 +182,7 @@ Query rewriting (if history non-empty)
       │
       ▼
 vector_store.query_chunks(retrieval_query, …)
-  ├─ Embed query; ChromaDB cosine similarity
+  ├─ Embed query; Qdrant cosine similarity
   ├─ Filter: active_pdf_ids, top_k=8, min_score=0.20
   └─ Returns ranked chunks with scores
       │
@@ -250,7 +250,7 @@ Query rewriting only affects **retrieval**; answers must still be grounded in re
 | Long conversations | Rolling summary + last 5 exchanges verbatim | Bounded tokens; LangSmith traces summarization |
 | Embedding model | `all-MiniLM-L6-v2` via HF Inference API | No local GPU; good quality/size tradeoff |
 | LLM | Groq `llama-3.3-70b-versatile` | Fast, strong instruction following |
-| Vector store | ChromaDB (persistent local) | Embedded, cosine similarity |
+| Vector store | Qdrant Cloud | Managed, cosine similarity |
 | PDF metadata | `pdf_registry.json` | Lightweight metadata without a second DB for PDFs |
 | Chat history | Neon PostgreSQL + `langchain-postgres` | Durable, scalable; UUID session keys |
 | Observability | LangSmith (`@traceable` on rewrite, summarize, LLM, retriever) | Debug RAG and conversation pipeline in one project |
@@ -270,14 +270,15 @@ Query rewriting only affects **retrieval**; answers must still be grounded in re
                      ┌────────────────────────────┼────────────────────────┐
                      │                            │                        │
               ┌──────▼──────┐              ┌───────▼────────┐     ┌─────────▼─────────┐
-              │ Persistent  │              │ pdf_registry   │     │ Neon PostgreSQL   │
-              │ Volume      │              │ .json          │     │ (chat_messages)   │
-              │ chroma_data/│              └────────────────┘     │ NEON_DATABASE_URL │
-              └─────────────┘                                      └───────────────────┘
+              │ Qdrant Cloud│              │ pdf_registry   │     │ Neon PostgreSQL   │
+              │ (managed)   │              │ .json          │     │ (chat_messages)   │
+              │ QDRANT_URL  │              └────────────────┘     │ NEON_DATABASE_URL │
+              │ QDRANT_KEY  │                                      └───────────────────┘
+              └─────────────┘
 ```
 
 - **Frontend** — Vercel; `NEXT_PUBLIC_API_URL` points at the Render backend.
-- **Backend** — Render; secrets: `GROQ_API_KEY`, `HF_TOKEN`, `NEON_DATABASE_URL`, optional `LANGCHAIN_API_KEY` / LangSmith vars, `ALLOWED_ORIGINS`.
+- **Backend** — Render; secrets: `GROQ_API_KEY`, `HF_TOKEN`, `QDRANT_URL`, `QDRANT_API_KEY`, `NEON_DATABASE_URL`, optional `LANGCHAIN_API_KEY` / LangSmith vars, `ALLOWED_ORIGINS`.
 - **Build** — `backend/build.sh` installs `certifi` and `requirements.txt` (no NLTK bootstrap required for current PDF path).
 - **CORS** — `ALLOWED_ORIGINS` should list the Vercel app origin in production.
 
@@ -289,6 +290,7 @@ Query rewriting only affects **retrieval**; answers must still be grounded in re
 |---|---|---|
 | Groq API | Answer generation, query rewriting, conversation summarization | `GROQ_API_KEY` |
 | HuggingFace Inference API | Embeddings (`all-MiniLM-L6-v2`) | `HF_TOKEN` |
+| Qdrant Cloud | Vector database for embeddings | `QDRANT_URL`, `QDRANT_API_KEY` |
 | Neon | PostgreSQL for `chat_messages` (LangChain history) | `NEON_DATABASE_URL` |
 | LangSmith | Traces (rewrite, summarize, `generate_response`, `query_chunks`) | `LANGCHAIN_API_KEY`, `LANGCHAIN_TRACING_V2`, `LANGCHAIN_PROJECT` (optional) |
 
@@ -302,7 +304,7 @@ Query rewriting only affects **retrieval**; answers must still be grounded in re
 | Backend | FastAPI, Python, uvicorn |
 | PDF & chunking | PyMuPDF, LlamaIndex `SemanticSplitterNodeParser` |
 | Embeddings | HuggingFace Inference API (`all-MiniLM-L6-v2`) |
-| Vector store | ChromaDB (persistent) |
+| Vector store | Qdrant Cloud |
 | Conversation DB | Neon PostgreSQL, `langchain-postgres` (`PostgresChatMessageHistory`) |
 | LLM | Groq `llama-3.3-70b-versatile` |
 | Observability | LangSmith + `@traceable` |

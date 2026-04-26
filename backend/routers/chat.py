@@ -1,6 +1,6 @@
 """
 Chat endpoint with full RAG pipeline:
-- Retrieves relevant chunks from ChromaDB filtered by active PDF IDs
+- Retrieves relevant chunks from Qdrant filtered by active PDF IDs
 - Maintains per-session conversation history in Neon PostgreSQL via
   LangChain's PostgresChatMessageHistory (langchain-postgres)
 - Calls Groq Llama 3.3 70B with strict grounding system prompt
@@ -200,7 +200,7 @@ async def chat(request: ChatRequest):
     """
     RAG chat endpoint:
     1. Takes a user message + list of active PDF IDs
-    2. Retrieves top-k semantically similar chunks from ChromaDB (filtered by PDF IDs)
+    2. Retrieves top-k semantically similar chunks from Qdrant (filtered by PDF IDs)
     3. Constructs a grounded prompt with the session's conversation history from Neon
     4. Calls Groq Llama 3.3 70B
     5. Persists the new turn to Neon and returns the response with page-level citations

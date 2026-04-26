@@ -3,8 +3,8 @@ Embedding service using the HuggingFace Inference API (remote inference).
 No model is loaded locally — all embedding computation happens on HF servers.
 
 Provides:
-  - embed_texts(texts)  → List[List[float]]   for ChromaDB inserts
-  - embed_query(query)  → List[float]          for ChromaDB queries
+  - embed_texts(texts)  → List[List[float]]   for Qdrant inserts
+  - embed_query(query)  → List[float]          for Qdrant queries
   - get_embed_model()   → LlamaIndex-compatible BaseEmbedding
                           used by SemanticSplitterNodeParser
 """

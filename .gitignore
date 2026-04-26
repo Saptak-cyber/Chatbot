@@ -16,7 +16,6 @@ env/
 *.local
 
 # Data (generated at runtime)
-backend/chroma_data/
 backend/pdf_registry.json
 
 # Node

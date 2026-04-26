@@ -1,6 +1,6 @@
 """
 PDF management endpoints: upload, list, and delete PDFs.
-Maintains a JSON-backed registry of uploaded PDFs alongside ChromaDB.
+Maintains a JSON-backed registry of uploaded PDFs alongside Qdrant.
 """
 import json
 import os
@@ -48,7 +48,7 @@ _load_registry()
 
 @router.post("/upload", response_model=UploadResponse, summary="Upload and index a PDF")
 async def upload_pdf(file: UploadFile = File(...)):
-    """Upload a PDF, semantically chunk it, embed it, and store in ChromaDB."""
+    """Upload a PDF, semantically chunk it, embed it, and store in Qdrant."""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files (.pdf) are accepted.")
 
@@ -109,7 +109,7 @@ async def list_pdfs():
 
 @router.delete("/pdfs/{pdf_id}", summary="Delete a PDF and its embeddings")
 async def delete_pdf(pdf_id: str):
-    """Remove a PDF and all its chunks from ChromaDB and the registry."""
+    """Remove a PDF and all its chunks from Qdrant and the registry."""
     if pdf_id not in _pdf_registry:
         raise HTTPException(status_code=404, detail="PDF not found.")
 

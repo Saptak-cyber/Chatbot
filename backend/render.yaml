@@ -10,8 +10,10 @@ services:
         sync: false
       - key: HF_TOKEN
         sync: false
-      - key: CHROMA_PATH
-        value: ./chroma_data
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
       - key: PDF_REGISTRY_PATH
         value: ./pdf_registry.json
       # Set to your Vercel frontend URL to restrict CORS in production

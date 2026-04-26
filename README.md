@@ -18,7 +18,7 @@ A strictly grounded RAG conversational agent built with **Next.js** (frontend) a
 | Backend | FastAPI (Python) → Render |
 | Chunking | LlamaIndex SemanticSplitterNodeParser |
 | Embeddings | sentence-transformers/all-MiniLM-L6-v2 |
-| Vector DB | ChromaDB (persistent) |
+| Vector DB | Qdrant Cloud |
 | LLM | Groq — Llama 3.3 70B |
 
 ---
@@ -32,7 +32,7 @@ python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env
-# Edit .env: add GROQ_API_KEY and HF_TOKEN
+# Edit .env: add GROQ_API_KEY, HF_TOKEN, QDRANT_URL, and QDRANT_API_KEY
 uvicorn main:app --reload
 ```
 Backend runs at `http://localhost:8000`.
@@ -58,6 +58,8 @@ Frontend runs at `http://localhost:3000`.
 4. Set environment variables:
    - `GROQ_API_KEY` — from [console.groq.com](https://console.groq.com)
    - `HF_TOKEN` — from [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
+   - `QDRANT_URL` — from [cloud.qdrant.io](https://cloud.qdrant.io) (your cluster URL)
+   - `QDRANT_API_KEY` — from [cloud.qdrant.io](https://cloud.qdrant.io) (your API key)
    - `NEXT_PUBLIC_API_URL` - https://your-service-name.onrender.com
 5. Build & start commands auto-detected from `render.yaml`
 
@@ -83,3 +85,5 @@ Frontend runs at `http://localhost:3000`.
 ## Required API Keys
 - **GROQ_API_KEY**: Get from [console.groq.com](https://console.groq.com/)
 - **HF_TOKEN**: Get from [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
+- **QDRANT_URL**: Get from [cloud.qdrant.io](https://cloud.qdrant.io) (your cluster URL)
+- **QDRANT_API_KEY**: Get from [cloud.qdrant.io](https://cloud.qdrant.io) (your API key)
