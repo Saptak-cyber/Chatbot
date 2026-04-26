@@ -234,23 +234,12 @@ async def chat(request: ChatRequest):
     retrieval_query = _rewrite_query(request.message, recent_history)
 
     try:
-        # First pass: strict threshold for high-confidence chunks
         chunks = query_chunks(
             query=retrieval_query,
             pdf_ids=request.active_pdf_ids,
-            top_k=10,
-            min_score=0.25,
+            top_k=8,
+            min_score=0.20,
         )
-        
-        # If no results, try relaxed threshold to avoid false negatives
-        if not chunks:
-            logger.info("No chunks at 0.25 threshold, trying relaxed 0.18 threshold")
-            chunks = query_chunks(
-                query=retrieval_query,
-                pdf_ids=request.active_pdf_ids,
-                top_k=8,
-                min_score=0.18,
-            )
     except Exception as e:
         logger.error(f"Retrieval failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve relevant context.")

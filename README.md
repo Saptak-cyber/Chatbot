@@ -5,7 +5,6 @@ A strictly grounded RAG conversational agent built with **Next.js** (frontend) a
 ## 🎯 Recent Improvements
 
 **Enhanced for evaluation criteria:**
-- ✅ **Two-stage adaptive retrieval** - Better recall without sacrificing precision
 - ✅ **Enhanced refusal detection** - More robust out-of-scope handling
 - ✅ **Confidence scoring** - Transparent reliability indicators
 - ✅ **Optimized chunking** - Better semantic boundaries and citations
