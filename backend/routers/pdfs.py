@@ -1,49 +1,37 @@
 """
 PDF management endpoints: upload, list, and delete PDFs.
-Maintains a JSON-backed registry of uploaded PDFs alongside Qdrant.
+Maintains a Neon-backed registry of uploaded PDFs alongside Qdrant.
 """
-import json
 import os
 import uuid
 import logging
+from contextlib import contextmanager
+from typing import List, Generator
 
+import psycopg
 from fastapi import APIRouter, UploadFile, File, HTTPException
+
 from models.schemas import PDFInfo, UploadResponse
 from services.chunker import extract_and_chunk_pdf
 from services.vector_store import add_chunks, delete_pdf_chunks
-from typing import List
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["PDFs"])
 
-PDF_REGISTRY_PATH = os.getenv("PDF_REGISTRY_PATH", "./pdf_registry.json")
-
-# In-memory PDF registry: pdf_id -> {name, page_count, chunk_count}
-_pdf_registry: dict = {}
+NEON_DATABASE_URL = os.getenv("NEON_DATABASE_URL")
+PDF_REGISTRY_TABLE = "pdf_registry"
 
 
-def _load_registry() -> None:
-    global _pdf_registry
-    if os.path.exists(PDF_REGISTRY_PATH):
-        try:
-            with open(PDF_REGISTRY_PATH, "r") as f:
-                _pdf_registry = json.load(f)
-            logger.info(f"Loaded {len(_pdf_registry)} PDFs from registry.")
-        except Exception as e:
-            logger.warning(f"Could not load PDF registry: {e}")
-            _pdf_registry = {}
-
-
-def _save_registry() -> None:
+@contextmanager
+def _db_conn() -> Generator[psycopg.Connection, None, None]:
+    """Open a short-lived psycopg connection to Neon."""
+    if not NEON_DATABASE_URL:
+        raise ValueError("NEON_DATABASE_URL environment variable is not set")
+    conn = psycopg.connect(NEON_DATABASE_URL)
     try:
-        with open(PDF_REGISTRY_PATH, "w") as f:
-            json.dump(_pdf_registry, f, indent=2)
-    except Exception as e:
-        logger.error(f"Could not save PDF registry: {e}")
-
-
-# Load registry on module import
-_load_registry()
+        yield conn
+    finally:
+        conn.close()
 
 
 @router.post("/upload", response_model=UploadResponse, summary="Upload and index a PDF")
@@ -82,12 +70,27 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     page_count = max(c["metadata"]["page_number"] for c in chunks)
 
-    _pdf_registry[pdf_id] = {
-        "name": pdf_name,
-        "page_count": page_count,
-        "chunk_count": chunk_count,
-    }
-    _save_registry()
+    try:
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO {PDF_REGISTRY_TABLE} (id, name, page_count, chunk_count)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE
+                SET name = EXCLUDED.name,
+                    page_count = EXCLUDED.page_count,
+                    chunk_count = EXCLUDED.chunk_count
+                """,
+                (pdf_id, pdf_name, page_count, chunk_count),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"PDF registry insert failed (rolling back vectors): {e}")
+        try:
+            delete_pdf_chunks(pdf_id)
+        except Exception as rollback_err:
+            logger.error(f"Vector rollback failed for pdf_id={pdf_id}: {rollback_err}")
+        raise HTTPException(status_code=500, detail="Failed to persist PDF metadata.")
 
     return UploadResponse(
         id=pdf_id,
@@ -100,20 +103,45 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 @router.get("/pdfs", response_model=List[PDFInfo], summary="List all uploaded PDFs")
 async def list_pdfs():
-    """Return metadata for all currently indexed PDFs."""
+    """Return metadata for all currently indexed PDFs from Neon."""
+    try:
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT id, name, page_count, chunk_count
+                FROM {PDF_REGISTRY_TABLE}
+                ORDER BY created_at DESC
+                """
+            )
+            rows = cur.fetchall()
+    except Exception as e:
+        logger.error(f"Failed to list PDFs from registry: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch PDFs.")
+
     return [
-        PDFInfo(id=pdf_id, **info)
-        for pdf_id, info in _pdf_registry.items()
+        PDFInfo(id=row[0], name=row[1], page_count=row[2], chunk_count=row[3])
+        for row in rows
     ]
 
 
 @router.delete("/pdfs/{pdf_id}", summary="Delete a PDF and its embeddings")
 async def delete_pdf(pdf_id: str):
-    """Remove a PDF and all its chunks from Qdrant and the registry."""
-    if pdf_id not in _pdf_registry:
+    """Remove a PDF and all its chunks from Qdrant and Neon registry."""
+    try:
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT name FROM {PDF_REGISTRY_TABLE} WHERE id = %s",
+                (pdf_id,),
+            )
+            row = cur.fetchone()
+    except Exception as e:
+        logger.error(f"Failed to check PDF in registry: {e}")
+        raise HTTPException(status_code=500, detail="Failed to access PDF registry.")
+
+    if not row:
         raise HTTPException(status_code=404, detail="PDF not found.")
 
-    pdf_name = _pdf_registry[pdf_id]["name"]
+    pdf_name = row[0]
 
     try:
         delete_pdf_chunks(pdf_id)
@@ -121,8 +149,16 @@ async def delete_pdf(pdf_id: str):
         logger.error(f"Failed to delete chunks for pdf_id={pdf_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to delete embeddings: {str(e)}")
 
-    del _pdf_registry[pdf_id]
-    _save_registry()
+    try:
+        with _db_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"DELETE FROM {PDF_REGISTRY_TABLE} WHERE id = %s",
+                (pdf_id,),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Failed to delete PDF from registry: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete PDF metadata.")
 
     logger.info(f"Deleted PDF '{pdf_name}' (pdf_id={pdf_id}).")
     return {"message": f"'{pdf_name}' has been deleted successfully."}

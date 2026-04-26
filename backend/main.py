@@ -42,7 +42,20 @@ async def lifespan(app: FastAPI):
             from langchain_postgres import PostgresChatMessageHistory
             with psycopg.connect(neon_url) as conn:
                 PostgresChatMessageHistory.create_tables(conn, "chat_messages")
-            logger.info("Neon chat_messages table ready.")
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS pdf_registry (
+                            id TEXT PRIMARY KEY,
+                            name TEXT NOT NULL,
+                            page_count INTEGER NOT NULL,
+                            chunk_count INTEGER NOT NULL,
+                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        )
+                        """
+                    )
+                conn.commit()
+            logger.info("Neon chat_messages and pdf_registry tables ready.")
         else:
             logger.warning("NEON_DATABASE_URL not set — conversation history will not be persisted.")
 

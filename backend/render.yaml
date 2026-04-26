@@ -14,8 +14,6 @@ services:
         sync: false
       - key: QDRANT_API_KEY
         sync: false
-      - key: PDF_REGISTRY_PATH
-        value: ./pdf_registry.json
       # Set to your Vercel frontend URL to restrict CORS in production
       # e.g. https://your-app.vercel.app
       - key: ALLOWED_ORIGINS
