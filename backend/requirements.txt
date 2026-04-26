@@ -10,6 +10,9 @@ llama-index-core>=0.11.0
 python-dotenv>=1.0.0
 pydantic>=2.9.0
 numpy
+# Conversation history — LangChain PostgresChatMessageHistory + Neon
+langchain-postgres>=0.0.13
+psycopg[binary]>=3.1.0
 # Observability — LangSmith tracing
 langsmith>=0.7.0
 # SSL certificates (fixes NLTK/HF download issues on macOS and some Linux envs)

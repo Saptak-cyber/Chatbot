@@ -1,58 +1,68 @@
 """
 Chat endpoint with full RAG pipeline:
 - Retrieves relevant chunks from ChromaDB filtered by active PDF IDs
-- Maintains per-session conversation history, persisted to disk so it survives
-  server restarts and stays in sync with the frontend's localStorage log
+- Maintains per-session conversation history in Neon PostgreSQL via
+  LangChain's PostgresChatMessageHistory (langchain-postgres)
 - Calls Groq Llama 3.3 70B with strict grounding system prompt
 - Returns response with page citations
 """
-import json
 import logging
 import os
+import psycopg
+from contextlib import contextmanager
 from fastapi import APIRouter, HTTPException
+from langchain_postgres import PostgresChatMessageHistory
+from langchain_core.messages import HumanMessage, AIMessage
 from models.schemas import ChatRequest, ChatResponse, Citation
 from services.multi_query import multi_query_retrieve
 from services.llm import generate_response
-from typing import Dict, List
+from typing import Dict, Generator, List
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Chat"])
 
 MAX_HISTORY_TURNS = 5  # Keep last 5 user/assistant exchanges (10 messages)
 
-HISTORY_PATH = os.getenv("HISTORY_PATH", "./chat_history.json")
-
-# ── Disk-backed conversation history ─────────────────────────────────────────
-# Keyed by session_id → list of clean {"role", "content"} dicts.
-# Persisted to HISTORY_PATH so the backend survives restarts without losing
-# context that the frontend already has in localStorage.
-
-_conversation_history: Dict[str, List[Dict]] = {}
+NEON_DATABASE_URL = os.getenv("NEON_DATABASE_URL")
+TABLE_NAME = "chat_messages"
 
 
-def _load_history() -> None:
-    global _conversation_history
-    if os.path.exists(HISTORY_PATH):
-        try:
-            with open(HISTORY_PATH, "r") as f:
-                _conversation_history = json.load(f)
-            logger.info(f"Loaded conversation history for {len(_conversation_history)} session(s).")
-        except Exception as e:
-            logger.warning(f"Could not load chat history: {e}")
-            _conversation_history = {}
+# ── DB connection helper ──────────────────────────────────────────────────────
 
+@contextmanager
+def _db_conn() -> Generator[psycopg.Connection, None, None]:
+    """Open a short-lived psycopg connection to Neon, close on exit.
 
-def _save_history() -> None:
+    Neon's pooler endpoint handles the actual connection pooling at the
+    infrastructure level, so one connection per request is fine.
+    """
+    if not NEON_DATABASE_URL:
+        raise ValueError("NEON_DATABASE_URL environment variable is not set")
+    conn = psycopg.connect(NEON_DATABASE_URL)
     try:
-        with open(HISTORY_PATH, "w") as f:
-            json.dump(_conversation_history, f, indent=2)
-    except Exception as e:
-        logger.error(f"Could not save chat history: {e}")
+        yield conn
+    finally:
+        conn.close()
 
 
-# Load persisted history when the module is first imported
-_load_history()
+# ── LangChain history helpers ─────────────────────────────────────────────────
 
+def _history_to_dicts(lc_history: PostgresChatMessageHistory) -> List[Dict]:
+    """Convert stored LangChain BaseMessages to plain role/content dicts.
+
+    Only the most recent MAX_HISTORY_TURNS exchanges are returned so the
+    Groq context window stays manageable.
+    """
+    result = []
+    for msg in lc_history.messages[-(MAX_HISTORY_TURNS * 2):]:
+        if isinstance(msg, HumanMessage):
+            result.append({"role": "user", "content": msg.content})
+        elif isinstance(msg, AIMessage):
+            result.append({"role": "assistant", "content": msg.content})
+    return result
+
+
+# ── Chat endpoint ──────────────────────────────────────────────────────────────
 
 @router.post("/chat", response_model=ChatResponse, summary="Send a message and get a grounded response")
 async def chat(request: ChatRequest):
@@ -60,9 +70,9 @@ async def chat(request: ChatRequest):
     RAG chat endpoint:
     1. Takes a user message + list of active PDF IDs
     2. Retrieves top-k semantically similar chunks from ChromaDB (filtered by PDF IDs)
-    3. Constructs a grounded prompt with conversation history
+    3. Constructs a grounded prompt with the session's conversation history from Neon
     4. Calls Groq Llama 3.3 70B
-    5. Returns the response with page-level citations
+    5. Persists the new turn to Neon and returns the response with page-level citations
     """
     if not request.active_pdf_ids:
         raise HTTPException(
@@ -76,14 +86,20 @@ async def chat(request: ChatRequest):
     if len(request.message) > 2000:
         raise HTTPException(status_code=400, detail="Message is too long (max 2000 characters).")
 
-    # Retrieve conversation history for this session
-    history = _conversation_history.get(request.session_id, [])
-    # Limit to last MAX_HISTORY_TURNS exchanges
-    recent_history = history[-(MAX_HISTORY_TURNS * 2):]
+    # Load session history from Neon
+    recent_history: List[Dict] = []
+    try:
+        with _db_conn() as conn:
+            lc_history = PostgresChatMessageHistory(
+                TABLE_NAME, request.session_id, sync_connection=conn
+            )
+            recent_history = _history_to_dicts(lc_history)
+    except Exception as e:
+        logger.error(f"Failed to load conversation history: {e}")
+        # Non-fatal: continue without history
 
     # Multi-query retrieval: LLM generates query variants → parallel ChromaDB
     # searches → deduplicated, scored, and threshold-filtered chunks.
-    # Falls back to direct vector search if LLM variant generation fails.
     try:
         chunks = multi_query_retrieve(
             query=request.message,
@@ -105,7 +121,7 @@ async def chat(request: ChatRequest):
             "the documents you have provided. Please ask something that is addressed "
             "within those documents."
         )
-        _update_history(request.session_id, history, request.message, response_text)
+        _persist_turn(request.session_id, request.message, response_text)
         return ChatResponse(
             response=response_text,
             session_id=request.session_id,
@@ -128,14 +144,11 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=f"LLM error: {str(e)}")
 
     # ── Detect LLM-level refusals ─────────────────────────────────────────────
-    # Even when chunks pass the threshold, the LLM may still decide the context
-    # doesn't actually answer the question. Detect the standard refusal prefix.
     is_grounded = "cannot find an answer" not in response_text.lower()
 
-    # Update history with CLEAN messages (no context injected)
-    _update_history(request.session_id, history, request.message, response_text)
+    # Persist the new turn to Neon
+    _persist_turn(request.session_id, request.message, response_text)
 
-    # Build deduplicated, sorted citations from chunks actually used
     citations = _build_citations(chunks)
 
     return ChatResponse(
@@ -149,22 +162,32 @@ async def chat(request: ChatRequest):
 
 @router.delete("/chat/{session_id}", summary="Clear conversation history for a session")
 async def clear_history(session_id: str):
-    """Clear the conversation memory for a given session_id."""
-    _conversation_history.pop(session_id, None)
-    _save_history()
+    """Clear all stored messages for a given session_id from Neon."""
+    try:
+        with _db_conn() as conn:
+            lc_history = PostgresChatMessageHistory(
+                TABLE_NAME, session_id, sync_connection=conn
+            )
+            lc_history.clear()
+    except Exception as e:
+        logger.error(f"Failed to clear history for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to clear conversation history.")
     return {"message": "Conversation history cleared."}
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def _update_history(session_id: str, current_history: List[Dict], user_msg: str, assistant_msg: str) -> None:
-    """Append the new user/assistant turn to conversation history and persist to disk."""
-    updated = current_history + [
-        {"role": "user", "content": user_msg},
-        {"role": "assistant", "content": assistant_msg},
-    ]
-    _conversation_history[session_id] = updated
-    _save_history()
+def _persist_turn(session_id: str, user_msg: str, assistant_msg: str) -> None:
+    """Append the user/assistant turn to Neon via LangChain history object."""
+    try:
+        with _db_conn() as conn:
+            lc_history = PostgresChatMessageHistory(
+                TABLE_NAME, session_id, sync_connection=conn
+            )
+            lc_history.add_user_message(user_msg)
+            lc_history.add_ai_message(assistant_msg)
+    except Exception as e:
+        logger.error(f"Failed to persist conversation turn: {e}")
 
 
 def _build_citations(chunks: List[Dict]) -> List[Citation]:

@@ -34,6 +34,18 @@ async def lifespan(app: FastAPI):
         get_splitter()
         logger.info("Initializing vector store...")
         get_collection()
+
+        # Ensure Neon chat_messages table exists (idempotent)
+        neon_url = os.getenv("NEON_DATABASE_URL")
+        if neon_url:
+            import psycopg
+            from langchain_postgres import PostgresChatMessageHistory
+            with psycopg.connect(neon_url) as conn:
+                PostgresChatMessageHistory.create_tables(conn, "chat_messages")
+            logger.info("Neon chat_messages table ready.")
+        else:
+            logger.warning("NEON_DATABASE_URL not set — conversation history will not be persisted.")
+
         logger.info("=== All services ready. API is live. ===")
     except Exception as e:
         logger.error(f"Startup failed: {e}")
