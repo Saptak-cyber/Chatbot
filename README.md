@@ -2,6 +2,17 @@
 
 A strictly grounded RAG conversational agent built with **Next.js** (frontend) and **FastAPI** (backend).
 
+## 🎯 Recent Improvements
+
+**Enhanced for evaluation criteria:**
+- ✅ **Two-stage adaptive retrieval** - Better recall without sacrificing precision
+- ✅ **Enhanced refusal detection** - More robust out-of-scope handling
+- ✅ **Confidence scoring** - Transparent reliability indicators
+- ✅ **Optimized chunking** - Better semantic boundaries and citations
+- ✅ **Deterministic responses** - Temperature 0.0 for consistency
+
+📖 **See [IMPROVEMENT_SUMMARY.md](IMPROVEMENT_SUMMARY.md) for details**
+
 ## Features
 - 📄 Upload multiple PDFs
 - 🔍 Semantic chunking via LlamaIndex `SemanticSplitterNodeParser`
@@ -87,3 +98,14 @@ Frontend runs at `http://localhost:3000`.
 - **HF_TOKEN**: Get from [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
 - **QDRANT_URL**: Get from [cloud.qdrant.io](https://cloud.qdrant.io) (your cluster URL)
 - **QDRANT_API_KEY**: Get from [cloud.qdrant.io](https://cloud.qdrant.io) (your API key)
+
+---
+
+## 📚 Documentation
+
+- **[IMPROVEMENT_SUMMARY.md](IMPROVEMENT_SUMMARY.md)** - Overview of recent enhancements
+- **[IMPROVEMENTS.md](IMPROVEMENTS.md)** - Detailed technical implementation
+- **[TESTING_GUIDE.md](TESTING_GUIDE.md)** - Comprehensive test cases and evaluation rubric
+- **[EVALUATOR_QUICK_START.md](EVALUATOR_QUICK_START.md)** - Quick evaluation guide
+- **[HLD.md](HLD.md)** - High-level design and architecture
+- **[COLD_START_FEATURE.md](COLD_START_FEATURE.md)** - Cold start detection feature

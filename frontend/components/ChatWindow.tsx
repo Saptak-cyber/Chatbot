@@ -124,6 +124,8 @@ export default function ChatWindow({
         sources_used: response.sources_used,
         is_grounded: response.is_grounded,
         retrieval_score: response.retrieval_score,
+        confidence_level: response.confidence_level,
+        num_sources: response.num_sources,
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, assistantMessage]);
@@ -236,6 +238,8 @@ export default function ChatWindow({
               sources={msg.sources_used}
               isGrounded={msg.is_grounded}
               retrievalScore={msg.retrieval_score}
+              confidenceLevel={msg.confidence_level}
+              numSources={msg.num_sources}
               timestamp={msg.timestamp}
               isError={msg.content.startsWith('⚠️')}
             />

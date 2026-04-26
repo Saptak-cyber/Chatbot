@@ -234,12 +234,23 @@ async def chat(request: ChatRequest):
     retrieval_query = _rewrite_query(request.message, recent_history)
 
     try:
+        # First pass: strict threshold for high-confidence chunks
         chunks = query_chunks(
             query=retrieval_query,
             pdf_ids=request.active_pdf_ids,
-            top_k=8,
-            min_score=0.20,
+            top_k=10,
+            min_score=0.25,
         )
+        
+        # If no results, try relaxed threshold to avoid false negatives
+        if not chunks:
+            logger.info("No chunks at 0.25 threshold, trying relaxed 0.18 threshold")
+            chunks = query_chunks(
+                query=retrieval_query,
+                pdf_ids=request.active_pdf_ids,
+                top_k=8,
+                min_score=0.18,
+            )
     except Exception as e:
         logger.error(f"Retrieval failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve relevant context.")
@@ -277,12 +288,28 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=f"LLM error: {str(e)}")
 
     # ── Detect LLM-level refusals ─────────────────────────────────────────────
-    is_grounded = "cannot find an answer" not in response_text.lower()
+    # Check for multiple refusal patterns
+    refusal_patterns = [
+        "cannot find an answer",
+        "does not contain",
+        "not addressed in",
+        "no information about",
+        "not covered in",
+        "outside the scope",
+    ]
+    is_grounded = not any(pattern in response_text.lower() for pattern in refusal_patterns)
 
     # Persist the new turn to Neon
     _persist_turn(request.session_id, request.message, response_text)
 
     citations = _build_citations(chunks)
+    
+    # Calculate confidence level based on retrieval scores
+    confidence_level = "low"
+    if retrieval_score >= 0.40:
+        confidence_level = "high"
+    elif retrieval_score >= 0.28:
+        confidence_level = "medium"
 
     return ChatResponse(
         response=response_text,
@@ -290,6 +317,8 @@ async def chat(request: ChatRequest):
         sources_used=citations if is_grounded else [],
         is_grounded=is_grounded,
         retrieval_score=retrieval_score,
+        confidence_level=confidence_level if is_grounded else None,
+        num_sources=len(citations) if is_grounded else 0,
     )
 
 

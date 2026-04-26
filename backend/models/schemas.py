@@ -36,3 +36,5 @@ class ChatResponse(BaseModel):
     sources_used: List[Citation]
     is_grounded: bool = True          # False when the query is out of scope / refused
     retrieval_score: Optional[float] = None  # max cosine similarity among retrieved chunks
+    confidence_level: Optional[str] = None  # "high", "medium", "low" based on scores
+    num_sources: Optional[int] = None  # number of unique pages cited

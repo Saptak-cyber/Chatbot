@@ -91,7 +91,7 @@ def generate_response(
 
 USER QUESTION: {query}
 
-Remember: Answer ONLY from the context above. Cite page numbers and document names."""
+Remember: Answer ONLY from the context above. Cite page numbers and document names. If the context doesn't fully answer the question, explicitly state what is missing."""
 
     messages.append({"role": "user", "content": user_content})
 
@@ -100,7 +100,7 @@ Remember: Answer ONLY from the context above. Cite page numbers and document nam
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=messages,
-        temperature=0.1,
+        temperature=0.0,  # Changed from 0.1 to 0.0 for maximum consistency
         max_tokens=1536,
     )
 

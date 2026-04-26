@@ -9,6 +9,8 @@ interface MessageBubbleProps {
   sources?: Citation[];
   isGrounded?: boolean;
   retrievalScore?: number;
+  confidenceLevel?: 'high' | 'medium' | 'low';
+  numSources?: number;
   timestamp: Date;
   isError?: boolean;
 }
@@ -69,6 +71,8 @@ export default function MessageBubble({
   sources,
   isGrounded,
   retrievalScore,
+  confidenceLevel,
+  numSources,
   timestamp,
   isError,
 }: MessageBubbleProps) {
@@ -166,7 +170,24 @@ export default function MessageBubble({
                 )}
               </span>
             ))}
-            {retrievalScore !== undefined && (
+            {/* Confidence level badge */}
+            {confidenceLevel && (
+              <span
+                className="citation-chip"
+                style={{
+                  marginLeft: 'auto',
+                  color: confidenceLevel === 'high' ? 'var(--success)' : confidenceLevel === 'medium' ? 'var(--warning)' : '#f87171',
+                  borderColor: (confidenceLevel === 'high' ? 'var(--success)' : confidenceLevel === 'medium' ? 'var(--warning)' : '#f87171') + '44',
+                  background: (confidenceLevel === 'high' ? 'var(--success)' : confidenceLevel === 'medium' ? 'var(--warning)' : '#f87171') + '18',
+                  fontWeight: 600,
+                }}
+                title={`Confidence: ${confidenceLevel} (based on retrieval score ${retrievalScore ? Math.round(retrievalScore * 100) + '%' : 'N/A'})`}
+              >
+                {confidenceLevel.toUpperCase()} confidence
+              </span>
+            )}
+            {/* Fallback to retrieval score if no confidence level */}
+            {!confidenceLevel && retrievalScore !== undefined && (
               <span
                 className="citation-chip"
                 style={{

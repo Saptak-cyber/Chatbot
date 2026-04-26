@@ -19,6 +19,8 @@ export interface Message {
   sources_used?: Citation[];
   is_grounded?: boolean;
   retrieval_score?: number;
+  confidence_level?: 'high' | 'medium' | 'low';
+  num_sources?: number;
   timestamp: Date;
 }
 
@@ -28,6 +30,8 @@ export interface ChatResponse {
   sources_used: Citation[];
   is_grounded: boolean;
   retrieval_score?: number;
+  confidence_level?: 'high' | 'medium' | 'low';
+  num_sources?: number;
 }
 
 export interface UploadResponse {

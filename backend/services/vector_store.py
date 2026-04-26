@@ -109,8 +109,8 @@ def add_chunks(chunks: List[Dict[str, Any]]) -> int:
 def query_chunks(
     query: str,
     pdf_ids: List[str],
-    top_k: int = 8,
-    min_score: float = 0.20,
+    top_k: int = 10,
+    min_score: float = 0.25,
 ) -> List[Dict[str, Any]]:
     """
     Query Qdrant for the most relevant chunks filtered to the given pdf_ids.
