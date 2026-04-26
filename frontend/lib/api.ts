@@ -64,3 +64,15 @@ export async function clearChatHistory(sessionId: string): Promise<void> {
   });
   await handleResponse<unknown>(res);
 }
+
+export async function checkHealth(): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_URL}/health`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(10000), // 10 second timeout
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}

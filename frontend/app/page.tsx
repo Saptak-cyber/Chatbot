@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import PDFSidebar from '@/components/PDFSidebar';
 import ChatWindow from '@/components/ChatWindow';
+import ColdStartBanner from '@/components/ColdStartBanner';
 import { PDFInfo } from '@/lib/types';
 import { listPDFs } from '@/lib/api';
 
@@ -45,6 +46,7 @@ export default function HomePage() {
 
   return (
     <div className="app-container">
+      <ColdStartBanner />
       <PDFSidebar
         pdfs={pdfs}
         selectedPdfIds={selectedPdfIds}
