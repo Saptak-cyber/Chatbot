@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from fastapi import APIRouter, HTTPException
 from langchain_postgres import PostgresChatMessageHistory
 from langchain_core.messages import HumanMessage, AIMessage
+from langsmith import traceable
 from models.schemas import ChatRequest, ChatResponse, Citation
 from services.vector_store import query_chunks
 from services.llm import generate_response
@@ -62,6 +63,7 @@ def _history_to_dicts(lc_history: PostgresChatMessageHistory) -> List[Dict]:
     return result
 
 
+@traceable(name="rewrite_query", run_type="llm")
 def _rewrite_query(query: str, history: List[Dict]) -> str:
     """Rewrite a follow-up query into a standalone query using conversation history.
 
