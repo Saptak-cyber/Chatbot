@@ -1016,16 +1016,36 @@ body {
 }
 
 /* ─── Message Content Formatting ─────────────────────────────────────────── */
+.message-content {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
 .message-content p {
   margin-bottom: 10px;
+  line-height: 1.7;
 }
 
 .message-content p:last-child {
   margin-bottom: 0;
 }
 
+.message-content h3 {
+  font-weight: 600;
+  font-size: 15px;
+  margin-bottom: 8px;
+  margin-top: 12px;
+  color: var(--text-primary);
+  letter-spacing: -0.2px;
+}
+
+.message-content h3:first-child {
+  margin-top: 0;
+}
+
 .message-content strong {
   font-weight: 600;
+  color: var(--text-primary);
 }
 
 .message-content em {
@@ -1039,16 +1059,54 @@ body {
   background: rgba(0, 0, 0, 0.3);
   padding: 2px 6px;
   border-radius: 4px;
+  color: var(--accent-bright);
 }
 
 .message-content ul,
 .message-content ol {
   padding-left: 20px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
+  list-style-position: outside;
+}
+
+.message-content ul {
+  list-style-type: disc;
+}
+
+.message-content ol {
+  list-style-type: decimal;
 }
 
 .message-content li {
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+  line-height: 1.6;
+  padding-left: 4px;
+}
+
+.message-content li:last-child {
+  margin-bottom: 0;
+}
+
+/* Citation formatting within text */
+.message-content a {
+  color: var(--accent-light);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(99, 102, 241, 0.3);
+  transition: all var(--transition);
+}
+
+.message-content a:hover {
+  color: var(--accent-bright);
+  border-bottom-color: var(--accent-bright);
+}
+
+/* Blockquote style for citations in text */
+.message-content blockquote {
+  border-left: 3px solid var(--accent-dim);
+  padding-left: 12px;
+  margin: 12px 0;
+  color: var(--text-secondary);
+  font-style: italic;
 }
 
 /* ─── Responsive ─────────────────────────────────────────────────────────── */

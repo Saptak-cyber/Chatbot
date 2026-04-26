@@ -237,7 +237,7 @@ async def chat(request: ChatRequest):
         chunks = query_chunks(
             query=retrieval_query,
             pdf_ids=request.active_pdf_ids,
-            top_k=8,
+            top_k=10,
             min_score=0.20,
         )
     except Exception as e:

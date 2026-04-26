@@ -109,7 +109,7 @@ def add_chunks(chunks: List[Dict[str, Any]]) -> int:
 def query_chunks(
     query: str,
     pdf_ids: List[str],
-    top_k: int = 8,
+    top_k: int = 10,
     min_score: float = 0.20,
 ) -> List[Dict[str, Any]]:
     """

@@ -20,35 +20,119 @@ function formatTime(date: Date): string {
 }
 
 function renderContent(text: string) {
-  // Simple markdown-like rendering for bold, newlines, and lists
+  // Enhanced markdown-like rendering with better formatting
   const lines = text.split('\n');
   const elements: React.ReactNode[] = [];
+  let inList = false;
+  let listItems: React.ReactNode[] = [];
+
+  const flushList = (index: number) => {
+    if (inList && listItems.length > 0) {
+      elements.push(
+        <ul key={`list-${index}`} style={{ marginBottom: 12, paddingLeft: 20 }}>
+          {listItems}
+        </ul>
+      );
+      listItems = [];
+      inList = false;
+    }
+  };
 
   lines.forEach((line, i) => {
-    if (!line.trim()) {
-      elements.push(<br key={`br-${i}`} />);
+    const trimmed = line.trim();
+
+    // Empty line - add spacing
+    if (!trimmed) {
+      flushList(i);
+      elements.push(<div key={`space-${i}`} style={{ height: 8 }} />);
       return;
     }
 
-    // Bold with **text**
-    const parts = line.split(/(\*\*[^*]+\*\*)/g);
-    const rendered = parts.map((part, j) => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        return <strong key={j}>{part.slice(2, -2)}</strong>;
-      }
-      return part;
-    });
+    // Process inline formatting
+    const processInline = (text: string) => {
+      const parts: React.ReactNode[] = [];
+      let remaining = text;
+      let key = 0;
 
-    if (line.match(/^[-•]\s/)) {
-      elements.push(
-        <li key={i} style={{ marginBottom: 3 }}>
-          {rendered}
-        </li>,
+      // Bold: **text**
+      const boldRegex = /\*\*([^*]+)\*\*/g;
+      let lastIndex = 0;
+      let match;
+
+      while ((match = boldRegex.exec(text)) !== null) {
+        if (match.index > lastIndex) {
+          parts.push(text.substring(lastIndex, match.index));
+        }
+        parts.push(<strong key={`bold-${key++}`}>{match[1]}</strong>);
+        lastIndex = match.index + match[0].length;
+      }
+
+      if (lastIndex < text.length) {
+        parts.push(text.substring(lastIndex));
+      }
+
+      return parts.length > 0 ? parts : text;
+    };
+
+    // List item: starts with -, •, *, or number.
+    if (trimmed.match(/^[-•*]\s/) || trimmed.match(/^\d+\.\s/)) {
+      inList = true;
+      const content = trimmed.replace(/^[-•*]\s/, '').replace(/^\d+\.\s/, '');
+      listItems.push(
+        <li key={`li-${i}`} style={{ marginBottom: 6, lineHeight: 1.6 }}>
+          {processInline(content)}
+        </li>
       );
-    } else {
-      elements.push(<p key={i}>{rendered}</p>);
+      return;
     }
+
+    // Not a list item, flush any pending list
+    flushList(i);
+
+    // Heading: starts with # or is all caps and short
+    const isHeading = trimmed.startsWith('#') || 
+                     (trimmed === trimmed.toUpperCase() && 
+                      trimmed.length < 60 && 
+                      trimmed.length > 3 &&
+                      !trimmed.includes('[Page'));
+
+    if (isHeading) {
+      const headingText = trimmed.replace(/^#+\s*/, '');
+      elements.push(
+        <h3 
+          key={`heading-${i}`} 
+          style={{ 
+            fontWeight: 600, 
+            fontSize: '15px',
+            marginBottom: 8,
+            marginTop: 12,
+            color: 'var(--text-primary)',
+            letterSpacing: '-0.2px'
+          }}
+        >
+          {processInline(headingText)}
+        </h3>
+      );
+      return;
+    }
+
+    // Regular paragraph
+    elements.push(
+      <p 
+        key={`p-${i}`} 
+        style={{ 
+          marginBottom: 10, 
+          lineHeight: 1.7,
+          color: 'var(--text-primary)'
+        }}
+      >
+        {processInline(trimmed)}
+      </p>
+    );
   });
+
+  // Flush any remaining list
+  flushList(lines.length);
 
   return <div className="message-content">{elements}</div>;
 }
