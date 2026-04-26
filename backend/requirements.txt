@@ -17,7 +17,3 @@ psycopg[binary]>=3.1.0
 langsmith>=0.7.0
 # SSL certificates (fixes NLTK/HF download issues on macOS and some Linux envs)
 certifi>=2024.0.0
-# Multi-query retrieval
-langchain
-langchain-groq
-langchain-chroma

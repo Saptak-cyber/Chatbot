@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException
 from langchain_postgres import PostgresChatMessageHistory
 from langchain_core.messages import HumanMessage, AIMessage
 from models.schemas import ChatRequest, ChatResponse, Citation
-from services.multi_query import multi_query_retrieve
+from services.vector_store import query_chunks
 from services.llm import generate_response
 from typing import Dict, Generator, List
 
@@ -148,10 +148,8 @@ async def chat(request: ChatRequest):
     # The original message is still passed to the LLM so the response feels natural.
     retrieval_query = _rewrite_query(request.message, recent_history)
 
-    # Multi-query retrieval: LLM generates query variants → parallel ChromaDB
-    # searches → deduplicated, scored, and threshold-filtered chunks.
     try:
-        chunks = multi_query_retrieve(
+        chunks = query_chunks(
             query=retrieval_query,
             pdf_ids=request.active_pdf_ids,
             top_k=8,
