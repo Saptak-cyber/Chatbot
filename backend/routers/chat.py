@@ -170,14 +170,59 @@ def _rewrite_query(query: str, history: List[Dict]) -> str:
         f"{m['role'].upper()}: {m['content'][:400]}" for m in history[-4:]
     )
     prompt = (
-        "Given the conversation history below and a follow-up question, rewrite the "
-        "follow-up as a standalone, specific question that can be understood and "
-        "answered without any prior context. If the question is already self-contained "
-        "and specific, return it unchanged.\n"
-        "Return ONLY the rewritten question — no explanation, no quotes.\n\n"
+        "You are a query rewriting assistant. Your job is to analyze whether a follow-up question "
+        "is related to the conversation history, and if so, rewrite it as a standalone question.\n\n"
+        
+        "INSTRUCTIONS:\n"
+        "1. First, determine if the follow-up question is RELATED to the conversation history.\n"
+        "2. A question is RELATED if it:\n"
+        "   - Uses pronouns referring to previous topics (it, that, this, they, those, etc.)\n"
+        "   - Asks for elaboration/clarification (\"elaborate\", \"explain more\", \"tell me more\")\n"
+        "   - References previous answers implicitly (\"what about X\" when X relates to prior topic)\n"
+        "   - Continues the same topic without full context\n"
+        "3. A question is UNRELATED if it:\n"
+        "   - Introduces a completely new topic\n"
+        "   - Is already fully self-contained with all necessary context\n"
+        "   - Doesn't reference anything from the conversation history\n"
+        "   - Changes the subject entirely\n\n"
+        
+        "RULES:\n"
+        "- If RELATED: Rewrite the question to be standalone by incorporating relevant context from history\n"
+        "- If UNRELATED: Return the question EXACTLY as given (unchanged)\n"
+        "- Return ONLY the question — no explanations, no quotes, no extra text\n"
+        "- The rewritten question should be natural and conversational\n"
+        "- Preserve the user's intent and question style\n\n"
+        
+        "EXAMPLES:\n"
+        "Example 1 (RELATED - uses pronoun):\n"
+        "History: USER: What is the main product? ASSISTANT: The main product is CloudSync Pro.\n"
+        "Follow-up: What are its features?\n"
+        "Output: What are the features of CloudSync Pro?\n\n"
+        
+        "Example 2 (UNRELATED - new topic):\n"
+        "History: USER: What is the revenue? ASSISTANT: The revenue is $5.2M.\n"
+        "Follow-up: What is the company's mission statement?\n"
+        "Output: What is the company's mission statement?\n\n"
+        
+        "Example 3 (RELATED - elaboration request):\n"
+        "History: USER: What is the methodology? ASSISTANT: The methodology involves three phases.\n"
+        "Follow-up: Can you elaborate on that?\n"
+        "Output: Can you elaborate on the three-phase methodology?\n\n"
+        
+        "Example 4 (RELATED - implicit reference):\n"
+        "History: USER: What was the 2023 revenue? ASSISTANT: The 2023 revenue was $5.2M.\n"
+        "Follow-up: What about Q4?\n"
+        "Output: What was the Q4 revenue in 2023?\n\n"
+        
+        "Example 5 (UNRELATED - already standalone):\n"
+        "History: USER: What is the price? ASSISTANT: The price is $99.\n"
+        "Follow-up: How many employees does the company have?\n"
+        "Output: How many employees does the company have?\n\n"
+        
+        "Now analyze this conversation:\n\n"
         f"Conversation history:\n{context_lines}\n\n"
         f"Follow-up question: {query}\n\n"
-        "Standalone question:"
+        "Your output (question only):"
     )
 
     try:
