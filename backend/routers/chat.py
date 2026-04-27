@@ -295,8 +295,10 @@ def _is_retrieval_required(query: str, history: List[Dict]) -> tuple[bool, str]:
         "   Examples: \"what do you mean?\", \"can you clarify?\", \"I don't understand\"\n"
         "   Needs retrieval: NO (rephrasing existing answer)\n\n"
         
-        "4. ELABORATION - Asking for MORE DETAIL on the same topic\n"
+        "4. ELABORATION - Asking for MORE DETAIL on the same topic OR asking for alternative approaches to the same topic\n"
         "   Examples: \"explain in detail\", \"tell me more\", \"elaborate\", \"give me more information\"\n"
+        "   Examples: \"can you teach me how to...\", \"what about doing it differently\", \"any other way?\"\n"
+        "   Key indicators: References same topic with pronouns (\"it\", \"that\", \"one\"), asks for alternatives/more info\n"
         "   Needs retrieval: YES (need more chunks from documents)\n\n"
         
         "5. HISTORY_BASED - Question about something already discussed\n"
@@ -304,8 +306,14 @@ def _is_retrieval_required(query: str, history: List[Dict]) -> tuple[bool, str]:
         "   Needs retrieval: NO (answer is in conversation history)\n\n"
         
         "6. NEW_QUESTION - New question or topic requiring document retrieval\n"
-        "   Examples: Any question about information not yet discussed\n"
+        "   Examples: Any question about information not yet discussed AND not related to previous topic\n"
+        "   Key: Must be BOTH new information AND unrelated to previous conversation\n"
         "   Needs retrieval: YES\n\n"
+        
+        "CRITICAL RULES:\n"
+        "- If the question uses pronouns (\"it\", \"that\", \"one\", \"this\") referring to the previous topic, it's ELABORATION, not NEW_QUESTION\n"
+        "- If the question asks for alternatives/different approaches to the same topic, it's ELABORATION\n"
+        "- Only classify as NEW_QUESTION if it's truly unrelated to the previous conversation\n\n"
         
         "INSTRUCTIONS:\n"
         "- Analyze the follow-up question in context of the conversation history\n"
@@ -326,6 +334,10 @@ def _is_retrieval_required(query: str, history: List[Dict]) -> tuple[bool, str]:
         "Query: Explain in detail\n"
         "Output: elaboration\n\n"
         
+        "History: USER: How to open a company? ASSISTANT: The document doesn't contain that info.\n"
+        "Query: Can't you teach me how to make one from the internet?\n"
+        "Output: elaboration\n\n"
+        
         "History: USER: What is the price? ASSISTANT: $99 [Page 5]\n"
         "Query: What are the features?\n"
         "Output: new_question\n\n"
@@ -333,6 +345,14 @@ def _is_retrieval_required(query: str, history: List[Dict]) -> tuple[bool, str]:
         "History: USER: Who is the CEO? ASSISTANT: John Smith [Page 2]\n"
         "Query: What did you say about the CEO?\n"
         "Output: history_based\n\n"
+        
+        "History: USER: What is the product? ASSISTANT: CloudSync Pro [Page 3]\n"
+        "Query: How do I install it?\n"
+        "Output: elaboration\n\n"
+        
+        "History: USER: What is the methodology? ASSISTANT: Three-phase approach [Page 12]\n"
+        "Query: Is there another way to do it?\n"
+        "Output: elaboration\n\n"
         
         f"Conversation history:\n{context_lines}\n\n"
         f"Follow-up question: {query}\n\n"
