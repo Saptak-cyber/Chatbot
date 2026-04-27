@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Chat"])
 
 MAX_HISTORY_TURNS = 5  # Keep last 5 user/assistant exchanges (10 messages)
+SUMMARY_INTERVAL_TURNS = 5  # Summarize every 5 exchanges: Q5, Q10, Q15, ...
 
 NEON_DATABASE_URL = os.getenv("NEON_DATABASE_URL")
 TABLE_NAME = "chat_messages"
@@ -102,12 +103,13 @@ def _summarize_messages(messages: list, existing_summary: str = "") -> str:
 
 
 def _maybe_summarize(session_id: str) -> None:
-    """After MAX_HISTORY_TURNS exchanges accumulate, fold the oldest messages
-    into a running summary stored as a SystemMessage in Neon.
+    """Summarize conversation in fixed batches of SUMMARY_INTERVAL_TURNS exchanges.
+
+    This intentionally summarizes at Q5, Q10, Q15... (every 5 full turns),
+    rather than summarizing on every turn once the history exceeds a window.
 
     Storage after summarization:
-        [SystemMessage(summary)]  ← rolling summary of everything before the window
-        [HumanMessage, AIMessage] × MAX_HISTORY_TURNS  ← verbatim recent window
+        [SystemMessage(summary)]  ← rolling summary of all completed batches
     """
     try:
         with _db_conn() as conn:
@@ -123,24 +125,27 @@ def _maybe_summarize(session_id: str) -> None:
             existing_summary = all_msgs[0].content if has_summary else ""
             conv_msgs = all_msgs[1:] if has_summary else all_msgs
 
-            # Only compress when we exceed the verbatim window
-            if len(conv_msgs) <= MAX_HISTORY_TURNS * 2:
+            # We only summarize complete user/assistant turns.
+            if len(conv_msgs) % 2 != 0:
                 return
 
-            to_summarize = conv_msgs[:-(MAX_HISTORY_TURNS * 2)]
-            to_keep = conv_msgs[-(MAX_HISTORY_TURNS * 2):]
+            turns = len(conv_msgs) // 2
+
+            # Run summarization only at fixed 5-turn intervals: 5, 10, 15, ...
+            if turns == 0 or turns % SUMMARY_INTERVAL_TURNS != 0:
+                return
+
+            to_summarize = conv_msgs
 
             new_summary = _summarize_messages(to_summarize, existing_summary)
 
-            # Rebuild Neon history: [summary] + recent verbatim window
+            # Rebuild Neon history with only the rolling summary.
             lc_history.clear()
             lc_history.add_message(SystemMessage(content=new_summary))
-            for msg in to_keep:
-                lc_history.add_message(msg)
 
             logger.info(
                 f"Session {session_id}: summarized {len(to_summarize)} messages "
-                f"into rolling summary ({len(to_keep)} messages kept verbatim)."
+                f"into rolling summary (fixed batch interval: {SUMMARY_INTERVAL_TURNS} turns)."
             )
     except Exception as e:
         logger.error(f"Conversation summarization failed for session {session_id}: {e}")
