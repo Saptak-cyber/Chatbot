@@ -108,15 +108,17 @@ def _generate_from_history(query: str, history: List[Dict], query_type: str) -> 
     """Generate a response based only on conversation history, without retrieving new chunks.
     
     Used for greetings, confirmations, clarifications, and history-based questions.
+    Uses the same context as generate_response: full history (including summary if present).
     
     Returns:
         tuple[str, bool]: (response_text, is_grounded)
     """
     from services.llm import get_client
     
-    # Build conversation context
+    # Build conversation context - use ALL history (including summary)
+    # This matches what generate_response receives
     history_text = "\n".join(
-        f"{m['role'].upper()}: {m['content']}" for m in history[-6:]  # Last 6 messages
+        f"{m['role'].upper()}: {m['content']}" for m in history
     )
     
     # Different prompts based on query type
@@ -232,6 +234,8 @@ def _maybe_summarize(session_id: str) -> None:
 def _is_retrieval_required(query: str, history: List[Dict]) -> tuple[bool, str]:
     """Determine if retrieval is needed or if the query can be answered from conversation history.
     
+    Uses the same context as generate_response: full history (including summary if present).
+    
     Returns:
         tuple[bool, str]: (needs_retrieval, query_type)
         - needs_retrieval: True if chunks should be retrieved, False if history is sufficient
@@ -240,9 +244,9 @@ def _is_retrieval_required(query: str, history: List[Dict]) -> tuple[bool, str]:
     if not history:
         return True, "new_question"
     
-    # Use last 4 messages for context
+    # Use ALL history (including summary) - same as generate_response
     context_lines = "\n".join(
-        f"{m['role'].upper()}: {m['content'][:400]}" for m in history[-4:]
+        f"{m['role'].upper()}: {m['content']}" for m in history
     )
     
     prompt = (
@@ -332,11 +336,12 @@ def _is_retrieval_required(query: str, history: List[Dict]) -> tuple[bool, str]:
 
 
 def _history_block_for_rewrite(history: List[Dict]) -> str:
-    """Format up to two prior turns with explicit recency labels for the rewrite LLM."""
-    max_chars = 400
-
+    """Format up to two prior turns with explicit recency labels for the rewrite LLM.
+    
+    No character limit - uses full message content for better context.
+    """
     def _line(m: Dict) -> str:
-        return f"{m['role'].upper()}: {m['content'][:max_chars]}"
+        return f"{m['role'].upper()}: {m['content']}"  # No character limit
 
     n = len(history)
     if n <= 2:
@@ -514,11 +519,13 @@ async def chat(request: ChatRequest):
 
     # ═══════════════════════════════════════════════════════════════════════════
     # STEP 1: Determine if retrieval is required
+    # Pass full history (including summary) for consistent context
     # ═══════════════════════════════════════════════════════════════════════════
     needs_retrieval, query_type = _is_retrieval_required(request.message, recent_history)
     
     # ═══════════════════════════════════════════════════════════════════════════
     # BRANCH A: No retrieval needed (greetings, confirmations, history-based)
+    # Pass full history (including summary) for consistent context
     # ═══════════════════════════════════════════════════════════════════════════
     if not needs_retrieval:
         logger.info(f"Skipping retrieval for query_type='{query_type}'")
@@ -551,8 +558,11 @@ async def chat(request: ChatRequest):
     
     # Rewrite query for better retrieval (especially important for elaborations)
     # Only rewrite if it's an elaboration - new questions should not be rewritten
+    # Pass last 4 messages (2 turns) for rewriting - no character limit
     retrieval_query = _rewrite_query(
-        request.message, recent_history[-REWRITE_QUERY_MAX_MESSAGES:], query_type
+        request.message, 
+        recent_history[-REWRITE_QUERY_MAX_MESSAGES:] if len(recent_history) > REWRITE_QUERY_MAX_MESSAGES else recent_history,
+        query_type
     )
 
     try:
