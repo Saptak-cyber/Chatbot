@@ -234,8 +234,8 @@ async def chat(request: ChatRequest):
         logger.error(f"Failed to load conversation history: {e}")
         # Non-fatal: continue without history
 
-    # Rewrite ambiguous follow-up queries into standalone queries for better retrieval.
-    # The original message is still passed to the LLM so the response feels natural.
+    # Rewrite ambiguous follow-up queries into standalone queries for better retrieval and generation.
+    # The rewritten query is used for both retrieval AND generation to ensure consistency.
     retrieval_query = _rewrite_query(request.message, recent_history)
 
     try:
@@ -270,10 +270,10 @@ async def chat(request: ChatRequest):
 
     retrieval_score = round(chunks[0]["score"], 4)
 
-    # Generate grounded response via Groq
+    # Generate grounded response via Groq using the rewritten query for consistency
     try:
         response_text, is_grounded = generate_response(
-            query=request.message,
+            query=retrieval_query,  # Use rewritten query instead of original
             context_chunks=chunks,
             history=recent_history,
         )
