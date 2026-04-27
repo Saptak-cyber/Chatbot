@@ -76,6 +76,9 @@ def _summarize_messages(messages: list, existing_summary: str = "") -> str:
 
     If there is an existing running summary it is extended rather than replaced,
     so no context is ever permanently lost.
+    
+    If the existing summary is very long (>800 tokens), it will be compressed first
+    to prevent unbounded growth.
     """
     from services.llm import get_client
 
@@ -83,6 +86,30 @@ def _summarize_messages(messages: list, existing_summary: str = "") -> str:
         f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
         for m in messages
     )
+
+    # Estimate token count (rough: 1 token ≈ 4 characters)
+    existing_summary_tokens = len(existing_summary) // 4 if existing_summary else 0
+    
+    # If existing summary is too long, compress it first
+    if existing_summary_tokens > 800:
+        logger.info(f"Compressing long summary (~{existing_summary_tokens} tokens)")
+        compress_prompt = (
+            "The following is a conversation summary that has become too long. "
+            "Create a more concise version that preserves all key facts, topics, "
+            "and important context, but removes redundancy and verbose descriptions.\n\n"
+            f"Long summary:\n{existing_summary}\n\n"
+            "Concise summary:"
+        )
+        
+        client = get_client()
+        compress_resp = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": compress_prompt}],
+            temperature=0.0,
+            max_tokens=512,
+        )
+        existing_summary = compress_resp.choices[0].message.content.strip()
+        logger.info(f"Compressed summary to ~{len(existing_summary) // 4} tokens")
 
     prompt = (
         "Progressively summarize the lines of conversation provided, adding onto "
@@ -98,7 +125,7 @@ def _summarize_messages(messages: list, existing_summary: str = "") -> str:
         model="llama-3.1-8b-instant",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
-        max_tokens=512,
+        max_tokens=1024,  # Increased from 512 to 1024 for longer conversations
     )
     return resp.choices[0].message.content.strip()
 
