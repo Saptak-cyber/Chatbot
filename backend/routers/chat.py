@@ -448,7 +448,7 @@ def _rewrite_query(query: str, history: List[Dict], query_type: str = "new_quest
         "1. First, determine if the follow-up question is RELATED to either the older or the most "
         "recent conversation shown below.\n"
         "2. A question is RELATED if it:\n"
-        "   - Uses pronouns referring to previous topics (it, that, this, they, those, etc.)\n"
+        "   - Uses pronouns referring to previous topics (it, that, this, they, those, one, etc.)\n"
         "   - Asks for elaboration/clarification (\"elaborate\", \"explain more\", \"tell me more\")\n"
         "   - References previous answers implicitly (\"what about X\" when X relates to prior topic)\n"
         "   - Continues the same topic without full context\n"
@@ -466,7 +466,10 @@ def _rewrite_query(query: str, history: List[Dict], query_type: str = "new_quest
         "Use the older exchange only when the follow-up clearly continues that earlier topic.\n"
         "- Return ONLY the question — no explanations, no quotes, no extra text\n"
         "- The rewritten question should be natural and conversational\n"
-        "- Preserve the user's intent and question style\n\n"
+        "- Preserve the user's intent and question style\n"
+        "- CRITICAL: Keep the question from the USER'S PERSPECTIVE (asking), not the assistant's perspective (offering help)\n"
+        "- WRONG: \"How can I help you...\" ❌\n"
+        "- RIGHT: \"Can you help me...\" ✅ or \"How do I...\" ✅\n\n"
         
         "EXAMPLES:\n"
         "Example 1 (RELATED - uses pronoun):\n"
@@ -504,6 +507,16 @@ def _rewrite_query(query: str, history: List[Dict], query_type: str = "new_quest
         "Most recent: USER: What about pricing? ASSISTANT: Enterprise tier is $499 per seat annually.\n"
         "Follow-up: Any discounts for nonprofits?\n"
         "Output: Are there discounts on the Enterprise $499-per-seat annual pricing for nonprofits?\n\n"
+        
+        "Example 8 (RELATED - keep user perspective):\n"
+        "History: USER: How to open a company like TechNova? ASSISTANT: The document doesn't contain that.\n"
+        "Follow-up: Can't you teach me how to make one from the internet?\n"
+        "Output: Can you help me start a company like TechNova from scratch?\n\n"
+        
+        "Example 9 (RELATED - user asking, not assistant offering):\n"
+        "History: USER: What is the installation process? ASSISTANT: The process involves three steps.\n"
+        "Follow-up: Can you show me how?\n"
+        "Output: Can you show me how to install it?\n\n"
         
         "Now analyze this conversation:\n\n"
         f"Conversation history:\n{context_lines}\n\n"
