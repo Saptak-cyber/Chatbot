@@ -169,10 +169,11 @@ def _generate_from_history(query: str, history: List[Dict], query_type: str) -> 
         )
     elif query_type == "history_based":
         system_prompt = (
-            "You are a helpful PDF assistant. The user is asking about something already discussed in the conversation. "
-            "Review the conversation history and provide the information they're asking about. "
-            "If the information is in the history, provide it with the original citations. "
-            "If it's not in the history, say: 'I don't see that information in our conversation. Could you ask a new question?'"
+            "You are a helpful PDF assistant. The user is asking a question that was already answered in our conversation. "
+            "Review the conversation history and provide the same information again. "
+            "IMPORTANT: Include the original page citations from the previous answer. "
+            "If the previous answer had citations like [Page X — filename], include them in your response. "
+            "You can say something like 'As I mentioned before...' or 'As we discussed earlier...' to acknowledge it's a repeat question."
         )
     else:
         system_prompt = (
@@ -197,10 +198,12 @@ def _generate_from_history(query: str, history: List[Dict], query_type: str) -> 
         )
         response_text = resp.choices[0].message.content.strip()
         
-        # For greetings and confirmations, always mark as grounded (they don't need PDF grounding)
-        is_grounded = query_type in {"greeting", "confirmation", "clarification"}
+        # Mark as grounded if the response is based on previous PDF-grounded answers
+        # Greetings, confirmations, clarifications, and history-based are all grounded
+        # because they reference previously grounded information
+        is_grounded = query_type in {"greeting", "confirmation", "clarification", "history_based"}
         
-        logger.info(f"Generated response from history for query_type='{query_type}'")
+        logger.info(f"Generated response from history for query_type='{query_type}', is_grounded={is_grounded}")
         return response_text, is_grounded
         
     except Exception as e:
@@ -268,7 +271,20 @@ def _is_retrieval_required(query: str, history: List[Dict]) -> tuple[bool, str]:
         - needs_retrieval: True if chunks should be retrieved, False if history is sufficient
         - query_type: "greeting", "confirmation", "elaboration", "new_question", "history_based"
     """
+    # Special handling for first message (no history)
     if not history:
+        # Check if it's a simple greeting even without history
+        greeting_patterns = [
+            "hello", "hi", "hey", "greetings", "good morning", "good afternoon", 
+            "good evening", "thank you", "thanks", "okay", "ok", "got it"
+        ]
+        query_lower = query.lower().strip()
+        
+        # Check if query is just a greeting (short and matches patterns)
+        if len(query_lower) < 30 and any(pattern in query_lower for pattern in greeting_patterns):
+            return False, "greeting"
+        
+        # Otherwise, it's a new question requiring retrieval
         return True, "new_question"
     
     # Use ALL history (including summary) - same as generate_response
@@ -688,6 +704,184 @@ async def chat(request: ChatRequest):
         retrieval_score=retrieval_score,
         confidence_level=confidence_level if is_grounded else None,
         num_sources=len(citations) if is_grounded else 0,
+    )
+
+
+@router.post("/chat/stream", summary="Send a message and get a streaming response")
+async def chat_stream(request: ChatRequest):
+    """
+    Streaming RAG chat endpoint with intelligent conditional retrieval.
+    Returns Server-Sent Events (SSE) for real-time response streaming.
+    """
+    from fastapi.responses import StreamingResponse
+    from services.llm import generate_response_stream
+    import json
+    
+    if not request.active_pdf_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Please select at least one PDF before sending a message.",
+        )
+
+    if not request.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    if len(request.message) > 2000:
+        raise HTTPException(status_code=400, detail="Message is too long (max 2000 characters).")
+
+    async def event_generator():
+        """Generate Server-Sent Events for streaming response."""
+        try:
+            # Load session history from Neon
+            recent_history: List[Dict] = []
+            try:
+                with _db_conn() as conn:
+                    lc_history = PostgresChatMessageHistory(
+                        TABLE_NAME, request.session_id, sync_connection=conn
+                    )
+                    recent_history = _history_to_dicts(lc_history)
+            except Exception as e:
+                logger.error(f"Failed to load conversation history: {e}")
+
+            # Determine if retrieval is required
+            needs_retrieval, query_type = _is_retrieval_required(request.message, recent_history)
+            
+            # BRANCH A: No retrieval needed
+            if not needs_retrieval:
+                logger.info(f"Skipping retrieval for query_type='{query_type}' (streaming)")
+                
+                try:
+                    response_text, is_grounded = _generate_from_history(
+                        request.message, recent_history, query_type
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to generate from history: {e}")
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'Failed to generate response'})}\n\n"
+                    return
+                
+                # Stream the response word by word for better UX
+                import asyncio
+                words = response_text.split()
+                for i, word in enumerate(words):
+                    chunk = word + (" " if i < len(words) - 1 else "")
+                    yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
+                    # Small delay to ensure streaming effect
+                    await asyncio.sleep(0.01)
+                
+                # Send done event
+                yield f"data: {json.dumps({'type': 'done', 'is_grounded': is_grounded, 'sources': [], 'confidence_level': None, 'num_sources': 0})}\n\n"
+                
+                # Persist the turn
+                _persist_turn(request.session_id, request.message, response_text)
+                return
+            
+            # BRANCH B: Retrieval needed
+            logger.info(f"Retrieval required for query_type='{query_type}' (streaming)")
+            
+            # Rewrite query
+            retrieval_query = _rewrite_query(
+                request.message,
+                recent_history[-REWRITE_QUERY_MAX_MESSAGES:] if len(recent_history) > REWRITE_QUERY_MAX_MESSAGES else recent_history,
+                query_type
+            )
+            
+            logger.info(f"Original query: '{request.message}' → Rewritten: '{retrieval_query}'")
+
+            # Retrieve chunks
+            try:
+                chunks = query_chunks(
+                    query=retrieval_query,
+                    pdf_ids=request.active_pdf_ids,
+                    top_k=10,
+                    min_score=0.20,
+                )
+            except Exception as e:
+                logger.error(f"Retrieval failed: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'message': 'Failed to retrieve context'})}\n\n"
+                return
+
+            # Hard refusal if no chunks
+            if not chunks:
+                refusal_text = (
+                    "I'm sorry, but this question does not appear to be covered by the "
+                    "uploaded PDF(s). I can only answer questions based on the content of "
+                    "the documents you have provided. Please ask something that is addressed "
+                    "within those documents."
+                )
+                yield f"data: {json.dumps({'type': 'refusal', 'content': refusal_text})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'is_grounded': False, 'sources': []})}\n\n"
+                _persist_turn(request.session_id, request.message, refusal_text)
+                return
+
+            retrieval_score = round(chunks[0]["score"], 4)
+            
+            # Send metadata first
+            yield f"data: {json.dumps({'type': 'metadata', 'retrieval_score': retrieval_score})}\n\n"
+
+            # Stream the response and get return value
+            # Python generators with return values: the return value is accessible
+            # via the StopIteration exception's value attribute when the generator exhausts
+            full_response = ""
+            is_grounded = True
+            
+            try:
+                gen = generate_response_stream(
+                    query=retrieval_query,
+                    context_chunks=chunks,
+                    history=recent_history,
+                )
+                
+                # Stream chunks to client and collect full response
+                import asyncio
+                try:
+                    while True:
+                        chunk_text = next(gen)
+                        full_response += chunk_text
+                        yield f"data: {json.dumps({'type': 'chunk', 'content': chunk_text})}\n\n"
+                        # Yield control to event loop to ensure streaming
+                        await asyncio.sleep(0)
+                except StopIteration as stop:
+                    # Generator exhausted - capture return value
+                    if stop.value:
+                        returned_response, is_grounded = stop.value
+                        # Use the returned response if it differs (shouldn't, but for safety)
+                        if returned_response and returned_response != full_response:
+                            logger.warning("Streamed response differs from returned response")
+                            full_response = returned_response
+                    
+            except Exception as e:
+                logger.error(f"LLM streaming failed: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'message': 'LLM generation failed'})}\n\n"
+                return
+
+            # Build citations
+            citations = _build_citations(chunks)
+            
+            # Calculate confidence
+            confidence_level = "low"
+            if retrieval_score >= 0.40:
+                confidence_level = "high"
+            elif retrieval_score >= 0.28:
+                confidence_level = "medium"
+
+            # Send done event with metadata
+            yield f"data: {json.dumps({'type': 'done', 'is_grounded': is_grounded, 'sources': [c.dict() for c in citations], 'confidence_level': confidence_level if is_grounded else None, 'num_sources': len(citations) if is_grounded else 0, 'retrieval_score': retrieval_score})}\n\n"
+            
+            # Persist the turn
+            _persist_turn(request.session_id, request.message, full_response)
+
+        except Exception as e:
+            logger.error(f"Streaming error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
     )
 
 

@@ -76,3 +76,81 @@ export async function checkHealth(): Promise<boolean> {
     return false;
   }
 }
+
+export async function sendMessageStream(
+  sessionId: string,
+  message: string,
+  activePdfIds: string[],
+  callbacks: {
+    onChunk: (chunk: string) => void;
+    onMetadata?: (data: any) => void;
+    onDone: (data: any) => void;
+    onError?: (error: string) => void;
+  }
+): Promise<void> {
+  const res = await fetch(`${API_URL}/api/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: sessionId,
+      message,
+      active_pdf_ids: activePdfIds,
+    }),
+  });
+
+  if (!res.ok) {
+    const error = `HTTP ${res.status}`;
+    callbacks.onError?.(error);
+    throw new Error(error);
+  }
+
+  const reader = res.body?.getReader();
+  const decoder = new TextDecoder();
+
+  if (!reader) {
+    callbacks.onError?.('No response body');
+    throw new Error('No response body');
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value);
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6));
+
+            switch (data.type) {
+              case 'metadata':
+                callbacks.onMetadata?.(data);
+                break;
+              case 'chunk':
+                callbacks.onChunk(data.content);
+                break;
+              case 'done':
+                callbacks.onDone(data);
+                break;
+              case 'refusal':
+                callbacks.onChunk(data.content);
+                callbacks.onDone({ is_grounded: false, sources: [] });
+                break;
+              case 'error':
+                callbacks.onError?.(data.message);
+                break;
+            }
+          } catch (e) {
+            console.error('Failed to parse SSE data:', e);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    callbacks.onError?.(error instanceof Error ? error.message : 'Stream error');
+    throw error;
+  }
+}

@@ -126,3 +126,125 @@ Then provide your response with citations. Remember: Answer ONLY from the contex
     # Fallback for rare non-compliant outputs.
     is_grounded = not any(pattern in full_text.lower() for pattern in refusal_patterns)
     return full_text, is_grounded
+
+
+@traceable(name="generate_response_stream", run_type="llm")
+def generate_response_stream(
+    query: str,
+    context_chunks: List[Dict],
+    history: List[Dict],
+) -> tuple[str, bool]:
+    """
+    Generate a strictly-grounded response using Groq Llama 3.3 70B with streaming.
+    Yields text chunks as they're generated, then returns final (response, is_grounded).
+    
+    This function has the SAME signature and output as generate_response(),
+    but streams chunks during generation.
+    
+    Yields:
+        str: Text chunks as they arrive from the LLM (with tags stripped)
+    
+    Returns:
+        tuple[str, bool]: (clean_response_text, is_grounded) - same as generate_response()
+    """
+    client = get_client()
+
+    # Build rich context string with page and source metadata
+    context_parts = []
+    for i, chunk in enumerate(context_chunks, 1):
+        meta = chunk["metadata"]
+        context_parts.append(
+            f"[Excerpt {i} | {meta['pdf_name']} — Page {meta['page_number']}]\n{chunk['text']}"
+        )
+    context_str = "\n\n---\n\n".join(context_parts)
+
+    # Construct message list (same as non-streaming)
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages.extend(history)
+
+    user_content = f"""CONTEXT FROM UPLOADED PDF(S):
+══════════════════════════════════════════
+{context_str}
+══════════════════════════════════════════
+
+USER QUESTION: {query}
+
+IMPORTANT: Start your response with EXACTLY ONE of these tags:
+- [GROUNDED] if you can answer from the context
+- [REFUSED] if the context does not contain the answer
+
+Then provide your response with citations. Remember: Answer ONLY from the context above. Cite page numbers and document names. If the context doesn't fully answer the question, explicitly state what is missing."""
+
+    messages.append({"role": "user", "content": user_content})
+
+    logger.info(f"Streaming response with {len(context_chunks)} context chunks, {len(history)} history messages.")
+
+    # Stream the response
+    stream = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=messages,
+        temperature=0.0,
+        max_tokens=1536,
+        stream=True,
+    )
+
+    full_response = ""
+    tag_stripped = False
+    
+    for chunk in stream:
+        if chunk.choices[0].delta.content:
+            text = chunk.choices[0].delta.content
+            full_response += text
+            
+            # Strip [GROUNDED] or [REFUSED] tags from the beginning
+            if not tag_stripped:
+                if full_response.startswith("[GROUNDED]"):
+                    if len(full_response) > 10:  # Tag complete
+                        # Yield everything after the tag
+                        clean_start = full_response[10:].lstrip()
+                        if clean_start:
+                            yield clean_start
+                        full_response = clean_start
+                        tag_stripped = True
+                    # Don't yield yet, wait for complete tag
+                    continue
+                elif full_response.startswith("[REFUSED]"):
+                    if len(full_response) > 9:  # Tag complete
+                        clean_start = full_response[9:].lstrip()
+                        if clean_start:
+                            yield clean_start
+                        full_response = clean_start
+                        tag_stripped = True
+                    continue
+                elif len(full_response) > 10:
+                    # No tag found, start yielding
+                    tag_stripped = True
+                    yield full_response
+                    continue
+            else:
+                # Tag already stripped, yield normally
+                yield text
+    
+    # Process final response (same logic as non-streaming)
+    refusal_patterns = [
+        "cannot find an answer",
+        "does not contain",
+        "not addressed in",
+        "no information about",
+        "not covered in",
+        "outside the scope",
+    ]
+
+    # Determine is_grounded (same logic as non-streaming)
+    original_response = full_response  # Keep for pattern matching
+    if "[GROUNDED]" in full_response:
+        full_response = full_response.replace("[GROUNDED]", "").strip()
+        is_grounded = True
+    elif "[REFUSED]" in full_response:
+        full_response = full_response.replace("[REFUSED]", "").strip()
+        is_grounded = False
+    else:
+        # Fallback: check refusal patterns
+        is_grounded = not any(pattern in full_response.lower() for pattern in refusal_patterns)
+    
+    return full_response, is_grounded

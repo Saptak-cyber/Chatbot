@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import MessageBubble from './MessageBubble';
 import { Message, PDFInfo } from '@/lib/types';
-import { sendMessage, clearChatHistory } from '@/lib/api';
+import { clearChatHistory, sendMessageStream } from '@/lib/api';
 
 interface ChatWindowProps {
   activePdfIds: string[];
@@ -38,6 +38,9 @@ export default function ChatWindow({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const storageKey = `docmind_messages_${sessionId}`;
+  const wordQueueRef = useRef<string[]>([]);
+  const isStreamingRef = useRef(false);
+  const currentMessageIdRef = useRef<string | null>(null);
   const hasLoadedFromStorage = useRef(false);
 
   const activePdfs = pdfs.filter((p) => activePdfIds.includes(p.id));
@@ -89,6 +92,31 @@ export default function ChatWindow({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
 
+  // Word-by-word streaming effect
+  useEffect(() => {
+    if (!isStreamingRef.current || wordQueueRef.current.length === 0) return;
+
+    const timer = setInterval(() => {
+      if (wordQueueRef.current.length === 0) {
+        isStreamingRef.current = false;
+        return;
+      }
+
+      const word = wordQueueRef.current.shift();
+      if (word && currentMessageIdRef.current) {
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === currentMessageIdRef.current
+              ? { ...msg, content: msg.content + word }
+              : msg
+          )
+        );
+      }
+    }, 30); // Display one word every 30ms
+
+    return () => clearInterval(timer);
+  }, [messages]); // Re-run when messages change
+
   // Auto-resize textarea
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
@@ -114,32 +142,95 @@ export default function ChatWindow({
     }
     setIsLoading(true);
 
-    try {
-      const response = await sendMessage(sessionId, userMessage.content, activePdfIds);
+    // Create placeholder message
+    const assistantId = `msg-${Date.now() + 1}`;
+    currentMessageIdRef.current = assistantId;
+    const placeholderMessage: Message = {
+      id: assistantId,
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, placeholderMessage]);
 
-      const assistantMessage: Message = {
-        id: `msg-${Date.now() + 1}`,
-        role: 'assistant',
-        content: response.response,
-        sources_used: response.sources_used,
-        is_grounded: response.is_grounded,
-        retrieval_score: response.retrieval_score,
-        confidence_level: response.confidence_level,
-        num_sources: response.num_sources,
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
+    // Reset word queue and start streaming
+    wordQueueRef.current = [];
+    isStreamingRef.current = true;
+
+    try {
+      await sendMessageStream(
+        sessionId,
+        userMessage.content,
+        activePdfIds,
+        {
+          onChunk: (chunk: string) => {
+            // Split chunk into words and add to queue
+            const words = chunk.split(/(\s+)/); // Keep spaces
+            wordQueueRef.current.push(...words);
+            
+            // Trigger re-render to start the word-by-word effect
+            setMessages((prev) => [...prev]);
+          },
+          onMetadata: (data: any) => {
+            // Optional: handle metadata if needed
+            console.log('Metadata:', data);
+          },
+          onDone: (data: any) => {
+            // Wait for queue to finish, then update metadata
+            const checkQueue = setInterval(() => {
+              if (wordQueueRef.current.length === 0) {
+                clearInterval(checkQueue);
+                isStreamingRef.current = false;
+                currentMessageIdRef.current = null;
+                
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.id === assistantId
+                      ? {
+                          ...msg,
+                          sources_used: data.sources || [],
+                          is_grounded: data.is_grounded,
+                          retrieval_score: data.retrieval_score,
+                          confidence_level: data.confidence_level,
+                          num_sources: data.num_sources,
+                        }
+                      : msg
+                  )
+                );
+                setIsLoading(false);
+              }
+            }, 50);
+          },
+          onError: (error: string) => {
+            wordQueueRef.current = [];
+            isStreamingRef.current = false;
+            currentMessageIdRef.current = null;
+            
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantId
+                  ? { ...msg, content: `⚠️ ${error}` }
+                  : msg
+              )
+            );
+            setIsLoading(false);
+          },
+        }
+      );
     } catch (err) {
+      wordQueueRef.current = [];
+      isStreamingRef.current = false;
+      currentMessageIdRef.current = null;
+      
       const errorMsg =
         err instanceof Error ? err.message : 'Something went wrong. Please try again.';
-      const errorMessage: Message = {
-        id: `msg-err-${Date.now()}`,
-        role: 'assistant',
-        content: `⚠️ ${errorMsg}`,
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, errorMessage]);
-    } finally {
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantId
+            ? { ...msg, content: `⚠️ ${errorMsg}` }
+            : msg
+        )
+      );
       setIsLoading(false);
     }
   }, [canSend, input, sessionId, activePdfIds]);
@@ -246,8 +337,8 @@ export default function ChatWindow({
           ))
         )}
 
-        {/* Typing indicator */}
-        {isLoading && (
+        {/* Typing indicator - only show if no placeholder message */}
+        {isLoading && messages.filter(m => m.role === 'assistant' && !m.content).length === 0 && (
           <div className="message-wrapper assistant">
             <div
               className="message-meta"
