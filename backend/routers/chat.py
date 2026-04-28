@@ -16,7 +16,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langsmith import traceable
 from models.schemas import ChatRequest, ChatResponse, Citation
 from services.vector_store import query_chunks
-from services.llm import generate_response
+from services.llm import generate_response, get_hard_refusal_text
 from typing import Dict, Generator, List
 
 logger = logging.getLogger(__name__)
@@ -155,19 +155,36 @@ def _generate_from_history(query: str, history: List[Dict], query_type: str, lan
         f"{m['role'].upper()}: {m['content']}" for m in history
     )
     
+    # Grounding constraint appended to every prompt branch.
+    # This is the critical guard: _generate_from_history must NEVER answer
+    # from general world knowledge — only from what is already in the chat history.
+    grounding_constraint = (
+        "\n\nCRITICAL — GROUNDING RULE: You are a PDF document assistant. "
+        "Your ONLY knowledge source is the conversation history shown above. "
+        "Do NOT use general world knowledge, training data, or any information "
+        "not present in the conversation history. "
+        "If the user's question asks for factual information that is NOT present "
+        "in the conversation history, respond ONLY with: "
+        "'I can only answer questions based on the uploaded PDF documents. "
+        "Please ask something covered in those documents.' "
+        "Do not attempt any answer, even a partial one."
+    )
+
     # Different prompts based on query type
     if query_type == "greeting":
         system_prompt = (
             "You are a helpful PDF assistant. The user is sending a greeting or pleasantry. "
             "Respond warmly and professionally. Keep it brief and friendly."
+            + grounding_constraint
             + lang_note
         )
     elif query_type == "confirmation":
         system_prompt = (
             "You are a helpful PDF assistant. The user is asking for confirmation of your previous answer. "
-            "Review the conversation history and confidently confirm your previous answer if it was based on "
-            "the PDF content. Reference the page number from your previous response. "
+            "Review the conversation history and confirm your previous answer only if it was based on PDF content. "
+            "Reference the page number from your previous response. "
             "Be reassuring and professional."
+            + grounding_constraint
             + lang_note
         )
     elif query_type == "clarification":
@@ -175,21 +192,22 @@ def _generate_from_history(query: str, history: List[Dict], query_type: str, lan
             "You are a helpful PDF assistant. The user is asking you to clarify or rephrase your previous answer. "
             "Review the conversation history and explain your previous answer in a different way, using simpler "
             "language or providing additional context. Keep the same citations."
+            + grounding_constraint
             + lang_note
         )
     elif query_type == "history_based":
         system_prompt = (
-            "You are a helpful PDF assistant. The user is asking a question that was already answered in our conversation. "
+            "You are a helpful PDF assistant. The user is asking about something already discussed. "
             "Review the conversation history and provide the same information again. "
             "IMPORTANT: Include the original page citations from the previous answer. "
-            "If the previous answer had citations like [Page X — filename], include them in your response. "
-            "You can say something like 'As I mentioned before...' or 'As we discussed earlier...' to acknowledge it's a repeat question."
+            "If the previous answer had citations like [Page X — filename], include them."
+            + grounding_constraint
             + lang_note
         )
     else:
         system_prompt = (
-            "You are a helpful PDF assistant. Answer the user's question based on the conversation history. "
-            "If the answer is in the history, provide it. If not, say you need to check the documents."
+            "You are a helpful PDF assistant. Answer the user's question ONLY from the conversation history."
+            + grounding_constraint
             + lang_note
         )
     
@@ -341,7 +359,11 @@ def _is_retrieval_required(query: str, history: List[Dict]) -> tuple[bool, str]:
         "CRITICAL RULES:\n"
         "- If the question uses pronouns (\"it\", \"that\", \"one\", \"this\") referring to the previous topic, it's ELABORATION, not NEW_QUESTION\n"
         "- If the question asks for alternatives/different approaches to the same topic, it's ELABORATION\n"
-        "- Only classify as NEW_QUESTION if it's truly unrelated to the previous conversation\n\n"
+        "- Only classify as NEW_QUESTION if it's truly unrelated to the previous conversation\n"
+        "- SAFETY: Any factual question (asking for a fact, number, colour, name, description, definition, etc.) "
+        "that is NOT clearly present in the conversation history MUST be classified as new_question — "
+        "even if the query is in Hindi, Hinglish, or any non-English language.\n"
+        "- SAFETY: When in doubt, always output new_question. It is better to over-retrieve than to hallucinate.\n\n"
         
         "INSTRUCTIONS:\n"
         "- Analyze the follow-up question in context of the conversation history\n"
@@ -396,8 +418,14 @@ def _is_retrieval_required(query: str, history: List[Dict]) -> tuple[bool, str]:
             temperature=0.0,
             max_tokens=20,
         )
-        query_type = resp.choices[0].message.content.strip().lower()
+        query_type = resp.choices[0].message.content.strip().lower().split()[0]  # first word only
         
+        # Validate — if the model returned something unrecognised, default to retrieval
+        valid_types = {"greeting", "confirmation", "clarification", "elaboration", "history_based", "new_question"}
+        if query_type not in valid_types:
+            logger.warning(f"Unrecognised query_type '{query_type}', defaulting to new_question")
+            query_type = "new_question"
+
         # Map query types to retrieval requirement
         no_retrieval_types = {"greeting", "confirmation", "clarification", "history_based"}
         needs_retrieval = query_type not in no_retrieval_types
@@ -669,12 +697,7 @@ async def chat(request: ChatRequest):
     # If no chunk cleared the similarity threshold the query is almost certainly
     # outside the PDF's content. Refuse immediately without calling the LLM.
     if not chunks:
-        response_text = (
-            "I'm sorry, but this question does not appear to be covered by the "
-            "uploaded PDF(s). I can only answer questions based on the content of "
-            "the documents you have provided. Please ask something that is addressed "
-            "within those documents."
-        )
+        response_text = get_hard_refusal_text(request.response_language or "auto")
         _persist_turn(request.session_id, request.message, response_text)
         return ChatResponse(
             response=response_text,
@@ -817,12 +840,7 @@ async def chat_stream(request: ChatRequest):
 
             # Hard refusal if no chunks
             if not chunks:
-                refusal_text = (
-                    "I'm sorry, but this question does not appear to be covered by the "
-                    "uploaded PDF(s). I can only answer questions based on the content of "
-                    "the documents you have provided. Please ask something that is addressed "
-                    "within those documents."
-                )
+                refusal_text = get_hard_refusal_text(request.response_language or "auto")
                 yield f"data: {json.dumps({'type': 'refusal', 'content': refusal_text})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'is_grounded': False, 'sources': []})}\n\n"
                 _persist_turn(request.session_id, request.message, refusal_text)

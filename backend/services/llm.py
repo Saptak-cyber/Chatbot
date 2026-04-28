@@ -28,6 +28,67 @@ SUPPORTED_LANGUAGES: dict[str, str] = {
     "th": "Thai (ภาษาไทย)",
 }
 
+# Pre-translated hard-refusal messages.
+# Used when 0 chunks pass the similarity threshold — the LLM is never called in
+# that path, so out-of-scope refusals must carry their own static translations.
+_HARD_REFUSAL_MESSAGES: dict[str, str] = {
+    "en": (
+        "I'm sorry, but this question does not appear to be covered by the "
+        "uploaded PDF(s). I can only answer questions based on the content of "
+        "the documents you have provided. Please ask something that is addressed "
+        "within those documents."
+    ),
+    "de": (
+        "Es tut mir leid, aber diese Frage wird in den hochgeladenen PDF(s) nicht "
+        "behandelt. Ich kann nur Fragen auf der Grundlage des Inhalts der von Ihnen "
+        "bereitgestellten Dokumente beantworten. Bitte stellen Sie eine Frage, die "
+        "in diesen Dokumenten behandelt wird."
+    ),
+    "fr": (
+        "Je suis désolé, mais cette question ne semble pas être couverte par le(s) "
+        "PDF téléchargé(s). Je ne peux répondre qu'aux questions basées sur le "
+        "contenu des documents que vous avez fournis. Veuillez poser une question "
+        "qui est traitée dans ces documents."
+    ),
+    "it": (
+        "Mi dispiace, ma questa domanda non sembra essere trattata nei PDF caricati. "
+        "Posso rispondere solo a domande basate sul contenuto dei documenti che hai "
+        "fornito. Chiedi qualcosa che sia trattato in quei documenti."
+    ),
+    "pt": (
+        "Lamento, mas esta questão não parece estar abrangida pelos PDF(s) "
+        "carregados. Só posso responder a perguntas com base no conteúdo dos "
+        "documentos fornecidos. Por favor, faça uma pergunta que seja abordada "
+        "nesses documentos."
+    ),
+    "hi": (
+        "मुझे खेद है, लेकिन यह प्रश्न अपलोड किए गए PDF में शामिल नहीं लगता। "
+        "मैं केवल आपके द्वारा प्रदान किए गए दस्तावेज़ों की सामग्री के आधार पर "
+        "प्रश्नों का उत्तर दे सकता हूँ। कृपया कुछ ऐसा पूछें जो इन दस्तावेज़ों में शामिल हो।"
+    ),
+    "es": (
+        "Lo siento, pero esta pregunta no parece estar cubierta en el/los PDF "
+        "cargados. Solo puedo responder preguntas basadas en el contenido de los "
+        "documentos que ha proporcionado. Por favor, haga una pregunta que esté "
+        "tratada en esos documentos."
+    ),
+    "th": (
+        "ขออภัย แต่คำถามนี้ดูเหมือนจะไม่ครอบคลุมอยู่ใน PDF ที่อัปโหลด "
+        "ฉันสามารถตอบคำถามได้เฉพาะจากเนื้อหาของเอกสารที่คุณให้มาเท่านั้น "
+        "กรุณาถามเกี่ยวกับเนื้อหาที่มีอยู่ในเอกสารเหล่านั้น"
+    ),
+}
+
+
+def get_hard_refusal_text(language: str = "auto") -> str:
+    """Return the hard-refusal message in the requested language.
+
+    Falls back to English for 'auto' or any unrecognised BCP-47 code.
+    """
+    lang = language if language in _HARD_REFUSAL_MESSAGES else "en"
+    return _HARD_REFUSAL_MESSAGES[lang]
+
+
 _BASE_SYSTEM_PROMPT = """You are a strict PDF Document Assistant. Your ONLY job is to answer questions using the provided PDF context excerpts.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
