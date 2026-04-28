@@ -21,6 +21,7 @@ class ChatRequest(BaseModel):
     session_id: str
     message: str
     active_pdf_ids: List[str]
+    response_language: Optional[str] = "auto"  # "auto", "en", "de", "fr", "it", "pt", "hi", "es", "th"
 
 
 class Citation(BaseModel):

@@ -18,6 +18,7 @@ import {
   Zap,
 } from 'lucide-react';
 import MessageBubble from './MessageBubble';
+import LanguageSelector from './LanguageSelector';
 import { Message, PDFInfo } from '@/lib/types';
 import { clearChatHistory, sendMessageStream } from '@/lib/api';
 
@@ -35,6 +36,7 @@ export default function ChatWindow({
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedLanguage, setSelectedLanguage] = useState('auto');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const storageKey = `docmind_messages_${sessionId}`;
@@ -215,7 +217,8 @@ export default function ChatWindow({
             );
             setIsLoading(false);
           },
-        }
+        },
+        selectedLanguage,
       );
     } catch (err) {
       wordQueueRef.current = [];
@@ -281,16 +284,22 @@ export default function ChatWindow({
           )}
         </div>
 
-        <button
-          id="clear-chat-btn"
-          className="btn-clear-chat"
-          onClick={handleClearChat}
-          disabled={messages.length === 0}
-          title="Clear conversation history"
-        >
-          <Trash2 size={13} />
-          Clear
-        </button>
+        <div className="chat-header-right">
+          <LanguageSelector
+            selectedLanguage={selectedLanguage}
+            onLanguageChange={setSelectedLanguage}
+          />
+          <button
+            id="clear-chat-btn"
+            className="btn-clear-chat"
+            onClick={handleClearChat}
+            disabled={messages.length === 0}
+            title="Clear conversation history"
+          >
+            <Trash2 size={13} />
+            Clear
+          </button>
+        </div>
       </div>
 
       {/* Messages area */}

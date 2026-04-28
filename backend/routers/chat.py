@@ -131,7 +131,7 @@ def _summarize_messages(messages: list, existing_summary: str = "") -> str:
 
 
 @traceable(name="generate_from_history", run_type="llm")
-def _generate_from_history(query: str, history: List[Dict], query_type: str) -> tuple[str, bool]:
+def _generate_from_history(query: str, history: List[Dict], query_type: str, language: str = "auto") -> tuple[str, bool]:
     """Generate a response based only on conversation history, without retrieving new chunks.
     
     Used for greetings, confirmations, clarifications, and history-based questions.
@@ -140,8 +140,15 @@ def _generate_from_history(query: str, history: List[Dict], query_type: str) -> 
     Returns:
         tuple[str, bool]: (response_text, is_grounded)
     """
-    from services.llm import get_client
+    from services.llm import get_client, SUPPORTED_LANGUAGES
     
+    # Language instruction suffix
+    if language != "auto" and language in SUPPORTED_LANGUAGES:
+        lang_name = SUPPORTED_LANGUAGES[language]
+        lang_note = f" Respond entirely in {lang_name}."
+    else:
+        lang_note = " Respond in the same language as the user's message."
+
     # Build conversation context - use ALL history (including summary)
     # This matches what generate_response receives
     history_text = "\n".join(
@@ -153,6 +160,7 @@ def _generate_from_history(query: str, history: List[Dict], query_type: str) -> 
         system_prompt = (
             "You are a helpful PDF assistant. The user is sending a greeting or pleasantry. "
             "Respond warmly and professionally. Keep it brief and friendly."
+            + lang_note
         )
     elif query_type == "confirmation":
         system_prompt = (
@@ -160,12 +168,14 @@ def _generate_from_history(query: str, history: List[Dict], query_type: str) -> 
             "Review the conversation history and confidently confirm your previous answer if it was based on "
             "the PDF content. Reference the page number from your previous response. "
             "Be reassuring and professional."
+            + lang_note
         )
     elif query_type == "clarification":
         system_prompt = (
             "You are a helpful PDF assistant. The user is asking you to clarify or rephrase your previous answer. "
             "Review the conversation history and explain your previous answer in a different way, using simpler "
             "language or providing additional context. Keep the same citations."
+            + lang_note
         )
     elif query_type == "history_based":
         system_prompt = (
@@ -174,11 +184,13 @@ def _generate_from_history(query: str, history: List[Dict], query_type: str) -> 
             "IMPORTANT: Include the original page citations from the previous answer. "
             "If the previous answer had citations like [Page X — filename], include them in your response. "
             "You can say something like 'As I mentioned before...' or 'As we discussed earlier...' to acknowledge it's a repeat question."
+            + lang_note
         )
     else:
         system_prompt = (
             "You are a helpful PDF assistant. Answer the user's question based on the conversation history. "
             "If the answer is in the history, provide it. If not, say you need to check the documents."
+            + lang_note
         )
     
     prompt = (
@@ -608,7 +620,8 @@ async def chat(request: ChatRequest):
         
         try:
             response_text, is_grounded = _generate_from_history(
-                request.message, recent_history, query_type
+                request.message, recent_history, query_type,
+                language=request.response_language or "auto",
             )
         except Exception as e:
             logger.error(f"Failed to generate from history: {e}")
@@ -676,9 +689,10 @@ async def chat(request: ChatRequest):
     # Generate grounded response via Groq using the rewritten query for consistency
     try:
         response_text, is_grounded = generate_response(
-            query=retrieval_query,  # Use rewritten query instead of original
+            query=retrieval_query,
             context_chunks=chunks,
             history=recent_history,
+            language=request.response_language or "auto",
         )
     except Exception as e:
         logger.error(f"LLM generation failed: {e}")
@@ -752,7 +766,8 @@ async def chat_stream(request: ChatRequest):
                 
                 try:
                     response_text, is_grounded = _generate_from_history(
-                        request.message, recent_history, query_type
+                        request.message, recent_history, query_type,
+                        language=request.response_language or "auto",
                     )
                 except Exception as e:
                     logger.error(f"Failed to generate from history: {e}")
@@ -829,6 +844,7 @@ async def chat_stream(request: ChatRequest):
                     query=retrieval_query,
                     context_chunks=chunks,
                     history=recent_history,
+                    language=request.response_language or "auto",
                 )
                 
                 # Stream chunks to client and collect full response

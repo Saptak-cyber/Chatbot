@@ -44,6 +44,7 @@ export async function sendMessage(
   sessionId: string,
   message: string,
   activePdfIds: string[],
+  responseLanguage: string = 'auto',
 ): Promise<ChatResponse> {
   const res = await fetch(`${API_URL}/api/chat`, {
     method: 'POST',
@@ -52,6 +53,7 @@ export async function sendMessage(
       session_id: sessionId,
       message,
       active_pdf_ids: activePdfIds,
+      response_language: responseLanguage,
     }),
   });
 
@@ -86,7 +88,8 @@ export async function sendMessageStream(
     onMetadata?: (data: any) => void;
     onDone: (data: any) => void;
     onError?: (error: string) => void;
-  }
+  },
+  responseLanguage: string = 'auto',
 ): Promise<void> {
   const res = await fetch(`${API_URL}/api/chat/stream`, {
     method: 'POST',
@@ -95,6 +98,7 @@ export async function sendMessageStream(
       session_id: sessionId,
       message,
       active_pdf_ids: activePdfIds,
+      response_language: responseLanguage,
     }),
   });
 

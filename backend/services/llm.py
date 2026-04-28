@@ -1,6 +1,7 @@
 """
-Groq LLM client for Llama 3.3 70B inference.
+Groq LLM client for Llama 3.1 8B inference.
 Includes a strict system prompt to ensure PDF-only grounding.
+Supports 8 languages natively supported by Llama 3.1 8B.
 """
 from groq import Groq
 from typing import List, Dict
@@ -13,7 +14,21 @@ logger = logging.getLogger(__name__)
 
 _client: Groq | None = None
 
-SYSTEM_PROMPT = """You are a strict PDF Document Assistant. Your ONLY job is to answer questions using the provided PDF context excerpts.
+# ── Language support ─────────────────────────────────────────────────────────
+# Only languages officially supported by Llama 3.1 8B Instant (Meta's list).
+SUPPORTED_LANGUAGES: dict[str, str] = {
+    "auto": "auto",
+    "en": "English",
+    "de": "German (Deutsch)",
+    "fr": "French (Français)",
+    "it": "Italian (Italiano)",
+    "pt": "Portuguese (Português)",
+    "hi": "Hindi (हिंदी)",
+    "es": "Spanish (Español)",
+    "th": "Thai (ภาษาไทย)",
+}
+
+_BASE_SYSTEM_PROMPT = """You are a strict PDF Document Assistant. Your ONLY job is to answer questions using the provided PDF context excerpts.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STRICT RULES — NON-NEGOTIABLE
@@ -21,7 +36,7 @@ STRICT RULES — NON-NEGOTIABLE
 1. GROUND EVERY CLAIM in the provided context. Never use prior knowledge, training data, or general world facts.
 
 2. REFUSE clearly when the context does not contain the answer.
-   Use this EXACT wording:
+   Use this EXACT wording (translated into the response language):
    "I cannot find an answer to this question in the provided PDF(s). The documents do not contain information about this topic. Please ask something covered in the uploaded documents."
    Do NOT attempt a partial or speculative answer.
 
@@ -44,6 +59,31 @@ Inline (after each claim): [Page 4 — report.pdf]
 End-of-response summary:   [Sources: Pages 4, 7 — report.pdf]"""
 
 
+def _build_system_prompt(language: str = "auto") -> str:
+    """Build the system prompt with an appended language instruction section."""
+    lang = language if language in SUPPORTED_LANGUAGES else "auto"
+    if lang == "auto":
+        lang_section = (
+            "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "LANGUAGE\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Respond in the SAME language as the user's question. "
+            "If the user writes in French respond in French, if in Spanish respond in Spanish, etc. "
+            "EXCEPTION: citation markers [Page X — filename.pdf] must be kept exactly as-is — never translate them."
+        )
+    else:
+        lang_name = SUPPORTED_LANGUAGES[lang]
+        lang_section = (
+            "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "LANGUAGE\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"You MUST respond ENTIRELY in {lang_name}. "
+            "Write ALL explanations, answers, and summaries in this language. "
+            "EXCEPTION: Citation markers [Page X — filename.pdf] must be kept exactly as-is — page numbers and filenames are never translated."
+        )
+    return _BASE_SYSTEM_PROMPT + lang_section
+
+
 def get_client() -> Groq:
     global _client
     if _client is None:
@@ -60,11 +100,13 @@ def generate_response(
     query: str,
     context_chunks: List[Dict],
     history: List[Dict],
+    language: str = "auto",
 ) -> tuple[str, bool]:
     """
-    Generate a strictly-grounded response using Groq Llama 3.3 70B.
+    Generate a strictly-grounded response using Groq Llama 3.1 8B.
     History contains clean user/assistant pairs (no context embedded).
     Context is injected only for the current user turn.
+    language: BCP-47 code ("auto", "en", "de", "fr", "it", "pt", "hi", "es", "th")
     """
     client = get_client()
 
@@ -78,7 +120,7 @@ def generate_response(
     context_str = "\n\n---\n\n".join(context_parts)
 
     # Construct message list
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = [{"role": "system", "content": _build_system_prompt(language)}]
 
     # Add conversation history (clean, no injected context)
     messages.extend(history)
@@ -133,19 +175,11 @@ def generate_response_stream(
     query: str,
     context_chunks: List[Dict],
     history: List[Dict],
+    language: str = "auto",
 ) -> tuple[str, bool]:
     """
-    Generate a strictly-grounded response using Groq Llama 3.3 70B with streaming.
-    Yields text chunks as they're generated, then returns final (response, is_grounded).
-    
-    This function has the SAME signature and output as generate_response(),
-    but streams chunks during generation.
-    
-    Yields:
-        str: Text chunks as they arrive from the LLM (with tags stripped)
-    
-    Returns:
-        tuple[str, bool]: (clean_response_text, is_grounded) - same as generate_response()
+    Generate a strictly-grounded response using Groq Llama 3.1 8B with streaming.
+    language: BCP-47 code ("auto", "en", "de", "fr", "it", "pt", "hi", "es", "th")
     """
     client = get_client()
 
@@ -159,7 +193,7 @@ def generate_response_stream(
     context_str = "\n\n---\n\n".join(context_parts)
 
     # Construct message list (same as non-streaming)
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = [{"role": "system", "content": _build_system_prompt(language)}]
     messages.extend(history)
 
     user_content = f"""CONTEXT FROM UPLOADED PDF(S):
