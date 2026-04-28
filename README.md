@@ -14,11 +14,14 @@ A strictly grounded RAG conversational agent built with **Next.js** (frontend) a
 
 ## Features
 - 📄 Upload multiple PDFs
-- 🔍 Semantic chunking via LlamaIndex `SemanticSplitterNodeParser`
+- 🔍 Semantic chunking via LlamaIndex `SemanticSplitterNodeParser` (threshold=88)
 - 🗂️ Select which PDFs the agent should use
-- 💬 Conversational history (per session)
+- 💬 Multi-session conversation threads (ChatGPT-style, persisted in `localStorage`)
 - 📎 Page-level citations for every response
 - 🚫 Strict refusal for out-of-scope queries
+- 🌍 Multi-language responses (EN, DE, FR, IT, PT, HI, ES, TH)
+- 📋 Copy-to-clipboard on assistant messages
+- 📊 Markdown table rendering
 - 🗑️ Delete PDFs on demand
 
 ## Tech Stack
@@ -26,10 +29,11 @@ A strictly grounded RAG conversational agent built with **Next.js** (frontend) a
 |-------|------------|
 | Frontend | Next.js 14 (TypeScript) → Vercel |
 | Backend | FastAPI (Python) → Render |
-| Chunking | LlamaIndex SemanticSplitterNodeParser |
-| Embeddings | sentence-transformers/all-MiniLM-L6-v2 |
+| Chunking | LlamaIndex `SemanticSplitterNodeParser` (threshold=88) |
+| Embeddings | HuggingFace Inference API — `BAAI/bge-small-en-v1.5` |
 | Vector DB | Qdrant Cloud |
-| LLM | Groq — Llama 3.3 70B |
+| LLM | Groq — Llama 3.1 8B Instant |
+| Observability | LangSmith |
 
 ---
 
@@ -42,7 +46,8 @@ python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env
-# Edit .env: add GROQ_API_KEY, HF_TOKEN, QDRANT_URL, and QDRANT_API_KEY
+# Edit .env: add GROQ_API_KEY, HF_TOKEN, QDRANT_URL, QDRANT_API_KEY,
+# and optionally LANGCHAIN_API_KEY for LangSmith tracing
 uvicorn main:app --reload
 ```
 Backend runs at `http://localhost:8000`.
@@ -102,9 +107,7 @@ Frontend runs at `http://localhost:3000`.
 
 ## 📚 Documentation
 
-- **[IMPROVEMENT_SUMMARY.md](IMPROVEMENT_SUMMARY.md)** - Overview of recent enhancements
-- **[IMPROVEMENTS.md](IMPROVEMENTS.md)** - Detailed technical implementation
-- **[TESTING_GUIDE.md](TESTING_GUIDE.md)** - Comprehensive test cases and evaluation rubric
-- **[EVALUATOR_QUICK_START.md](EVALUATOR_QUICK_START.md)** - Quick evaluation guide
-- **[HLD.md](HLD.md)** - High-level design and architecture
-- **[COLD_START_FEATURE.md](COLD_START_FEATURE.md)** - Cold start detection feature
+- **[HLD.md](HLD.md)** — High-level design and architecture
+- **[Short_Technical_Note.md](Short_Technical_Note.md)** — Architecture, design decisions, trade-offs
+- **[technical_note.md](technical_note.md)** — Detailed technical reference
+- **[test_instruction.md](test_instruction.md)** — Evaluator test guide with TechNova-specific queries

@@ -25,7 +25,6 @@ Additional enhancements:
 from __future__ import annotations
 
 import re
-import uuid
 from llama_index.core import Document
 from llama_index.core.node_parser import SemanticSplitterNodeParser
 import fitz  # PyMuPDF
@@ -212,14 +211,7 @@ def extract_and_chunk_pdf(
         # The LLM also sees it, which helps it produce precise inline citations.
         contextual_text = f"{header}\n\n{body_text}"
 
-        # ── 4. Parent chunk = current page only (given to LLM) ───────────────
-        # parent_text deliberately excludes the cross-page tail so it stays
-        # coherent to a single page/section.  The tail overlap in contextual_text
-        # is only there to help the semantic splitter draw better boundaries.
-        parent_id = str(uuid.uuid4())
-        parent_text = f"{header}\n\n{text}"     # raw page text — no tail from prev page
-
-        # ── 5. Semantic split into child chunks (embedded + searched) ─────────
+        # ── 4. Semantic split into child chunks (embedded + searched) ─────────
         llama_doc = Document(
             text=contextual_text,
             metadata={
@@ -237,16 +229,13 @@ def extract_and_chunk_pdf(
                 continue
             all_chunks.append(
                 {
-                    "text": chunk_text,          # child: embedded & searched
+                    "text": chunk_text,
                     "metadata": {
                         "pdf_id": pdf_id,
                         "pdf_name": pdf_name,
                         "page_number": page_number_1indexed,
                         "chunk_index": chunk_idx,
                         "section": active_section,
-                        # ── Hierarchical fields ────────────────────────────────
-                        "parent_id": parent_id,      # shared by siblings on this page
-                        "parent_text": parent_text,  # full page text → LLM context
                     },
                 }
             )
