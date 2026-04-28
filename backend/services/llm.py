@@ -56,7 +56,29 @@ STRICT RULES — NON-NEGOTIABLE
 CITATION FORMAT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Inline (after each claim): [Page 4 — report.pdf]
-End-of-response summary:   [Sources: Pages 4, 7 — report.pdf]"""
+End-of-response summary:   [Sources: Pages 4, 7 — report.pdf]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMATTING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Always format responses with clean Markdown so they render nicely:
+- Put EACH list item on its OWN line, starting with "- " immediately followed by the item text ON THAT SAME LINE
+- NEVER output a line that contains only "-", "*", or "•" — that is broken Markdown
+- NEVER run multiple list items together in a single paragraph
+- Use **Bold** for policy names, section titles, and key terms
+- Use a blank line to separate distinct sections or categories
+- For multi-part answers, introduce each part with "**Category Name:**" then a newline followed by bullet points
+- Prefer short, scannable sentences over dense paragraph blocks
+
+CORRECT list format (do this):
+- **Sick Leave:** 10 paid sick days per calendar year [Page 9 — doc.pdf]
+- **PTO:** 15 days/year for 0-2 years of service [Page 9 — doc.pdf]
+
+WRONG list format (never do this):
+*
+**Sick Leave:** 10 paid sick days
+*
+**PTO:** 15 days/year"""
 
 
 def _build_system_prompt(language: str = "auto") -> str:

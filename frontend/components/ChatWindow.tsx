@@ -341,10 +341,6 @@ export default function ChatWindow({
                 <FileText size={14} className="hint-icon" />
                 Every response includes page number citations
               </div>
-              <div className="chat-empty-hint">
-                <Zap size={14} className="hint-icon" />
-                Powered by Llama 3.3 70B via Groq
-              </div>
             </div>
           </div>
         ) : (

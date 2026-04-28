@@ -2,6 +2,11 @@
 Embedding service using the HuggingFace Inference API (remote inference).
 No model is loaded locally — all embedding computation happens on HF servers.
 
+Model: BAAI/bge-small-en-v1.5
+  - Same 384 dimensions as all-MiniLM-L6-v2 (no Qdrant collection changes needed)
+  - Significantly better retrieval quality on MTEB benchmarks
+  - v1.5 supports optional query instruction prefix for improved search
+
 Provides:
   - embed_texts(texts)  → List[List[float]]   for Qdrant inserts
   - embed_query(query)  → List[float]          for Qdrant queries
@@ -21,7 +26,10 @@ from pydantic import Field
 
 logger = logging.getLogger(__name__)
 
-HF_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+# BGE-small-en-v1.5: same 384 dims as all-MiniLM, significantly better MTEB scores.
+# Instruction prefix improves retrieval quality (optional in v1.5 but recommended).
+HF_MODEL = "BAAI/bge-small-en-v1.5"
+_BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 # ─── HF Inference API client (singleton) ─────────────────────────────────────
 
@@ -59,8 +67,13 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
 
 
 def embed_query(query: str) -> List[float]:
-    """Embed a single query string via HF Inference API."""
-    return _call_inference_api([query])[0]
+    """Embed a single query string via HF Inference API.
+    
+    Prepends the BGE instruction prefix so the query embedding aligns with
+    the passage embedding space for optimal retrieval.
+    """
+    prefixed = _BGE_QUERY_PREFIX + query
+    return _call_inference_api([prefixed])[0]
 
 
 # ─── LlamaIndex-compatible adapter (used by SemanticSplitterNodeParser) ──────
@@ -82,7 +95,7 @@ class HFInferenceAPIEmbedding(BaseEmbedding):
         return _call_inference_api([text])[0]
 
     def _get_query_embedding(self, query: str) -> List[float]:
-        return _call_inference_api([query])[0]
+        return _call_inference_api([_BGE_QUERY_PREFIX + query])[0]
 
     async def _aget_query_embedding(self, query: str) -> List[float]:
         return self._get_query_embedding(query)

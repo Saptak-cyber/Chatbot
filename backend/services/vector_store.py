@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 COLLECTION_NAME = "pdf_chunks"
-VECTOR_SIZE = 384  # all-MiniLM-L6-v2 embedding dimension
+VECTOR_SIZE = 384  # BGE-small-en-v1.5 embedding dimension (same as all-MiniLM-L6-v2)
 
 _client: Optional[QdrantClient] = None
 
@@ -93,7 +93,9 @@ def add_chunks(chunks: List[Dict[str, Any]]) -> int:
                 vector=embedding,
                 payload={
                     "text": text,
-                    **metadata,  # pdf_id, pdf_name, page_number, chunk_index, section
+                    # Hierarchical fields (parent_id, parent_text) are included
+                    # via **metadata if present; legacy chunks without them work fine.
+                    **metadata,
                 },
             )
         )
@@ -113,20 +115,20 @@ def query_chunks(
     min_score: float = 0.20,
 ) -> List[Dict[str, Any]]:
     """
-    Query Qdrant for the most relevant chunks filtered to the given pdf_ids.
+    Hierarchical retrieval: search child chunks, auto-merge to parent context.
 
-    Chunks below `min_score` (cosine similarity) are discarded so the LLM only
-    receives genuinely relevant context. If nothing clears the threshold the
-    caller should treat this as an out-of-scope query and refuse immediately
-    without calling the LLM.
+    Steps:
+      1. Search top_k * 3 child chunks (small, precise → high cosine accuracy).
+      2. Group by parent_id, keep the best child score per parent.
+      3. Return up to top_k unique parent texts (complete page context → better LLM answers).
 
-    Returns chunks sorted by cosine similarity (highest first).
+    Legacy chunks without parent_id are passed through as-is (backward compatible).
+    Chunks below min_score are discarded before merging.
     """
     from services.embedder import embed_query
 
     client = get_client()
-    
-    # Check if collection has any points
+
     collection_info = client.get_collection(COLLECTION_NAME)
     if collection_info.points_count == 0:
         return []
@@ -146,43 +148,68 @@ def query_chunks(
             )
 
     try:
-        # Use query_points which is the correct method in qdrant-client
+        # Over-fetch so deduplication leaves us with enough unique parents.
         search_result = client.query_points(
             collection_name=COLLECTION_NAME,
             query=query_embedding,
             query_filter=query_filter,
-            limit=top_k,
+            limit=top_k * 3,
             score_threshold=min_score,
         ).points
-        
-        # Debug logging
-        logger.info(f"Qdrant search returned {len(search_result)} results")
+
+        logger.info(f"Qdrant search returned {len(search_result)} child results")
         if search_result:
-            logger.info(f"Top result score: {search_result[0].score:.4f}")
-            logger.info(f"Top result payload keys: {list(search_result[0].payload.keys())}")
+            logger.info(f"Top child score: {search_result[0].score:.4f}")
     except Exception as e:
         logger.error(f"Qdrant query error: {e}")
         return []
 
-    chunks = []
-    for scored_point in search_result:
-        payload = scored_point.payload.copy()  # Make a copy to avoid modifying original
-        text = payload.pop("text", "")  # Extract text from payload
-        
-        chunks.append({
-            "text": text,
-            "metadata": payload,  # Remaining fields are metadata
-            "score": float(scored_point.score),
-        })
+    # ── Auto-merge: group children by parent_id, keep best score per parent ──
+    # parent_map: parent_id → {score, payload}
+    parent_map: Dict[str, Dict] = {}
+    standalone: List[Dict] = []   # legacy chunks without parent_id
 
-    # Already sorted by score descending from Qdrant
+    for point in search_result:
+        payload = point.payload
+        parent_id = payload.get("parent_id")
+        score = float(point.score)
+
+        if not parent_id:
+            # Legacy chunk — no hierarchy info, use as-is
+            standalone.append({
+                "text": payload.get("text", ""),
+                "metadata": {k: v for k, v in payload.items()
+                              if k not in ("text", "parent_text", "parent_id")},
+                "score": score,
+            })
+            continue
+
+        if parent_id not in parent_map or score > parent_map[parent_id]["score"]:
+            parent_map[parent_id] = {"score": score, "payload": payload}
+
+    # Build result list from unique parents, sorted by best-child score descending
+    chunks: List[Dict] = []
+    for _, info in sorted(parent_map.items(), key=lambda x: -x[1]["score"]):
+        p = info["payload"]
+        # Return parent_text to LLM (full page); fall back to child text if missing
+        context_text = p.get("parent_text") or p.get("text", "")
+        metadata = {k: v for k, v in p.items()
+                    if k not in ("text", "parent_text", "parent_id")}
+        chunks.append({"text": context_text, "metadata": metadata, "score": info["score"]})
+        if len(chunks) >= top_k:
+            break
+
+    # Merge standalone legacy results (capped at remaining slots)
+    remaining = top_k - len(chunks)
+    chunks.extend(standalone[:remaining])
+
     if chunks:
         logger.info(
-            f"Returning {len(chunks)} chunks above min_score={min_score} "
-            f"(top score: {chunks[0]['score']:.3f})"
+            f"Returning {len(chunks)} parent contexts after merging "
+            f"({len(parent_map)} unique parents found, top score: {chunks[0]['score']:.3f})"
         )
     else:
-        logger.info(f"No chunks cleared min_score={min_score} — query is likely out of scope.")
+        logger.info(f"No chunks cleared min_score={min_score} — query is out of scope.")
 
     return chunks
 

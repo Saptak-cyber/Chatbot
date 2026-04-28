@@ -1,31 +1,31 @@
 """
-Semantic chunking using LlamaIndex's SemanticSplitterNodeParser.
+Hierarchical semantic chunking using LlamaIndex's SemanticSplitterNodeParser.
 
-Strategy: page-scoped semantic chunking with two enhancements:
+Strategy: two-level hierarchy with small-to-big retrieval
 
-  1. Cross-page tail overlap
-     The last PAGE_OVERLAP_SENTENCES sentences of page N are prepended to
-     page N+1 before chunking so paragraphs that straddle a page break are
-     captured in a single coherent chunk.
+  Level 1 — Parent chunk (per page/section)
+    The full page text with context header prepended.
+    This is what the LLM sees as context — complete, coherent.
 
-  2. Contextual header injection  (Anthropic-style contextual retrieval)
-     Before each chunk is embedded, a short structured header is prepended:
+  Level 2 — Child chunks (semantic sub-units within the parent)
+    Produced by SemanticSplitterNodeParser (threshold=88, tighter than before).
+    These are embedded and stored in Qdrant for precise vector matching.
+    Each child stores its parent's text + a shared parent_id.
 
-       Document: report.pdf | Section: Introduction | Page: 3
+Retrieval flow:
+  1. Query embedding matches child chunks (small → high precision cosine score)
+  2. vector_store groups children by parent_id and deduplicates
+  3. LLM receives the parent text (large → complete context, fewer hallucinations)
 
-     This means the embedding vector encodes *where* the chunk sits in the
-     document, not just what it says.
-
-     Section headings are detected heuristically: any line whose dominant
-     font size is in the top 20 % of all font sizes on that page is treated
-     as a heading.  The active heading persists across pages so chunks on
-     pages without a visible heading still inherit the last known section.
-
-Uses the HF Inference API embedding from services/embedder.py (no local model).
+Additional enhancements:
+  • Cross-page tail overlap: last 3 sentences of page N prepended to page N+1
+  • Contextual header injection: "Document: X | Section: Y | Page: Z" (Anthropic style)
+  • Section heading detection via PyMuPDF font-size percentile + bold heuristic
 """
 from __future__ import annotations
 
 import re
+import uuid
 from llama_index.core import Document
 from llama_index.core.node_parser import SemanticSplitterNodeParser
 import fitz  # PyMuPDF
@@ -44,6 +44,12 @@ PAGE_OVERLAP_SENTENCES = 3
 # this percentile of all font sizes seen on the page.
 HEADING_FONT_PERCENTILE = 0.80
 
+# Semantic split threshold.
+# Lower = more splits = smaller, more precise child chunks.
+# 88 is the sweet spot: tight enough for precise matching, not so tight that
+# single sentences become their own chunks.
+BREAKPOINT_THRESHOLD = 88   # was 95
+
 # ── Singleton splitter ────────────────────────────────────────────────────────
 
 _splitter: Optional[SemanticSplitterNodeParser] = None
@@ -57,10 +63,13 @@ def get_splitter() -> SemanticSplitterNodeParser:
         embed_model = get_embed_model()
         _splitter = SemanticSplitterNodeParser(
             buffer_size=1,
-            breakpoint_percentile_threshold=95,
+            breakpoint_percentile_threshold=BREAKPOINT_THRESHOLD,
             embed_model=embed_model,
         )
-        logger.info("SemanticSplitterNodeParser initialised (HF Inference API).")
+        logger.info(
+            f"SemanticSplitterNodeParser initialised "
+            f"(threshold={BREAKPOINT_THRESHOLD}, model=BGE-small-en-v1.5)."
+        )
     return _splitter
 
 
@@ -203,7 +212,14 @@ def extract_and_chunk_pdf(
         # The LLM also sees it, which helps it produce precise inline citations.
         contextual_text = f"{header}\n\n{body_text}"
 
-        # ── 4. Semantic split ─────────────────────────────────────────────────
+        # ── 4. Parent chunk = current page only (given to LLM) ───────────────
+        # parent_text deliberately excludes the cross-page tail so it stays
+        # coherent to a single page/section.  The tail overlap in contextual_text
+        # is only there to help the semantic splitter draw better boundaries.
+        parent_id = str(uuid.uuid4())
+        parent_text = f"{header}\n\n{text}"     # raw page text — no tail from prev page
+
+        # ── 5. Semantic split into child chunks (embedded + searched) ─────────
         llama_doc = Document(
             text=contextual_text,
             metadata={
@@ -221,17 +237,24 @@ def extract_and_chunk_pdf(
                 continue
             all_chunks.append(
                 {
-                    "text": chunk_text,
+                    "text": chunk_text,          # child: embedded & searched
                     "metadata": {
                         "pdf_id": pdf_id,
                         "pdf_name": pdf_name,
                         "page_number": page_number_1indexed,
                         "chunk_index": chunk_idx,
                         "section": active_section,
+                        # ── Hierarchical fields ────────────────────────────────
+                        "parent_id": parent_id,      # shared by siblings on this page
+                        "parent_text": parent_text,  # full page text → LLM context
                     },
                 }
             )
 
     doc.close()
-    logger.info(f"Extracted {len(all_chunks)} semantic chunks from '{pdf_name}'.")
+    logger.info(
+        f"Extracted {len(all_chunks)} child chunks from '{pdf_name}' "
+        f"(threshold={BREAKPOINT_THRESHOLD}, model=BGE-small-en-v1.5)."
+    )
     return all_chunks
+

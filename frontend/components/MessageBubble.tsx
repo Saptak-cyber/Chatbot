@@ -37,9 +37,70 @@ function parseTableCells(line: string): string[] {
     .map((cell) => cell.trim());
 }
 
+/**
+ * Normalise LLM output before line-by-line rendering.
+ *
+ * The LLM sometimes emits inline asterisk bullets without newlines:
+ *   "…policy [Page 9]. * Sick leave…"
+ * This step splits those into proper separate lines so the renderer
+ * picks them up as list items.
+ *
+ * It also removes stray lines that are only "-", "*", or "•" (broken markdown)
+ * and merges the following line as a proper "- ..." bullet when needed.
+ */
+function preprocessContent(text: string): string {
+  const rawLines = text.split('\n');
+  const fixedLines: string[] = [];
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    const trimmed = line.trim();
+
+    // Drop orphan bullet markers (line is only * / - / •) — common LLM glitch.
+    // Look ahead PAST any blank lines to find the real content line.
+    if (/^[-•*]\s*$/.test(trimmed)) {
+      // Advance j past blank lines
+      let j = i + 1;
+      while (j < rawLines.length && !rawLines[j].trim()) j++;
+
+      if (j < rawLines.length) {
+        const nt = rawLines[j].trim();
+        if (
+          nt &&
+          !/^[-•*]\s/.test(nt) &&
+          !/^\d+\.\s/.test(nt) &&
+          !nt.startsWith('|')
+        ) {
+          // Absorb the orphan marker + all blank lines + content into one bullet
+          fixedLines.push('- ' + rawLines[j].replace(/^\s+/, ''));
+          i = j; // skip to the merged line
+          continue;
+        }
+      }
+      // No valid next line — just drop the orphan marker
+      continue;
+    }
+
+    fixedLines.push(line);
+  }
+
+  return fixedLines
+    .join('\n')
+    // "text. * Item" → "text.\n* Item"  (inline bullet after sentence)
+    .replace(/\.\s*\*\s+(?=[^\s])/g, '.\n* ')
+    // "[Citation]. * Item" → "[Citation].\n* Item"
+    .replace(/(\[[^\]]+\])\s*\.\s*\*\s+/g, '$1.\n* ')
+    // "text. - Item" (dash variant, only if followed by capital to avoid hyphens)
+    .replace(/\.\s*-\s+(?=[A-Z])/g, '.\n- ')
+    // Ensure "**Label:** rest of line" is on its own line
+    .replace(/([^\n])\s*(\*\*[^*]+\*\*:)/g, '$1\n\n$2');
+}
+
 function renderContent(text: string) {
+  // Normalise inline bullets and bold-label patterns before line-splitting
+  const normalised = preprocessContent(text);
   // Enhanced markdown-like rendering with bold, lists, tables
-  const lines = text.split('\n');
+  const lines = normalised.split('\n');
   const elements: React.ReactNode[] = [];
   let inList = false;
   let listItems: React.ReactNode[] = [];
@@ -104,19 +165,33 @@ function renderContent(text: string) {
     tableLines = [];
   };
 
-  // Process inline formatting (bold + plain)
+  // Process inline formatting (bold, bold-label, plain)
   const processInline = (text: string): React.ReactNode => {
     const parts: React.ReactNode[] = [];
-    const boldRegex = /\*\*([^*]+)\*\*/g;
+    // Regex: **label:** (bold ending with colon — sub-heading pattern) OR **bold** (normal bold)
+    const inlineRegex = /(\*\*([^*]+?):\*\*|\*\*([^*]+?)\*\*)/g;
     let lastIndex = 0;
     let key = 0;
     let match;
 
-    while ((match = boldRegex.exec(text)) !== null) {
+    while ((match = inlineRegex.exec(text)) !== null) {
       if (match.index > lastIndex) {
         parts.push(text.substring(lastIndex, match.index));
       }
-      parts.push(<strong key={`bold-${key++}`}>{match[1]}</strong>);
+      if (match[2]) {
+        // **label:** — render as accent-coloured label
+        parts.push(
+          <span
+            key={`label-${key++}`}
+            style={{ color: 'var(--accent-bright)', fontWeight: 600 }}
+          >
+            {match[2]}:
+          </span>
+        );
+      } else {
+        // **bold** — render as bold
+        parts.push(<strong key={`bold-${key++}`}>{match[3]}</strong>);
+      }
       lastIndex = match.index + match[0].length;
     }
     if (lastIndex < text.length) {
@@ -149,10 +224,19 @@ function renderContent(text: string) {
       return;
     }
 
-    // List item: starts with -, •, *, or number.
-    if (trimmed.match(/^[-•*]\s/) || trimmed.match(/^\d+\.\s/)) {
+    // List item: "- ", "• ", "* ", "*Item", numbered
+    const isListLine =
+      trimmed.match(/^[-•]\s/) ||
+      trimmed.match(/^\*\s/) ||
+      trimmed.match(/^\*(?!\*)\S/) ||
+      trimmed.match(/^\d+\.\s/);
+    if (isListLine) {
       inList = true;
-      const content = trimmed.replace(/^[-•*]\s/, '').replace(/^\d+\.\s/, '');
+      let content = trimmed;
+      if (/^\d+\.\s/.test(content)) content = content.replace(/^\d+\.\s/, '');
+      else if (/^[-•]\s/.test(content)) content = content.replace(/^[-•]\s/, '');
+      else if (/^\*\s/.test(content)) content = content.replace(/^\*\s+/, '');
+      else if (/^\*(?!\*)/.test(content)) content = content.replace(/^\*/, '');
       listItems.push(
         <li key={`li-${i}`} style={{ marginBottom: 6, lineHeight: 1.6 }}>
           {processInline(content)}
