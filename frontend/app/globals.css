@@ -1015,6 +1015,120 @@ body {
   }
 }
 
+/* ─── Copy Button ────────────────────────────────────────────────────────── */
+.bubble-copyable {
+  /* ensure the bubble is the positioning parent */
+  position: relative;
+}
+
+.btn-copy-msg {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  font-size: 10px;
+  font-weight: 500;
+  font-family: 'Inter', sans-serif;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+/* Reveal on bubble hover */
+.bubble-copyable:hover .btn-copy-msg {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.btn-copy-msg:hover {
+  color: var(--accent-bright);
+  background: var(--accent-dim);
+  border-color: var(--border-accent);
+}
+
+/* Copied / success state */
+.btn-copy-msg.copied {
+  opacity: 1;
+  pointer-events: none;
+  color: var(--success);
+  background: var(--success-dim);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+/* ─── Markdown Tables ─────────────────────────────────────────────────────── */
+.md-table-wrap {
+  overflow-x: auto;
+  margin: 12px 0;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-glass);
+  /* Tiny scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-glass) transparent;
+}
+
+.md-table-wrap::-webkit-scrollbar {
+  height: 4px;
+}
+.md-table-wrap::-webkit-scrollbar-thumb {
+  background: var(--border-glass);
+  border-radius: var(--radius-full);
+}
+
+.md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.md-table thead tr {
+  background: rgba(99, 102, 241, 0.1);
+  border-bottom: 1px solid var(--border-accent);
+}
+
+.md-table th {
+  padding: 8px 14px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-bright);
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.md-table td {
+  padding: 7px 14px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: top;
+  white-space: normal;       /* Allow cell text to wrap */
+  max-width: 280px;
+}
+
+.md-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.md-table tbody tr:hover {
+  background: var(--bg-glass-hover);
+}
+
+.md-table tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.015);
+}
+
 /* ─── Message Content Formatting ─────────────────────────────────────────── */
 .message-content {
   word-wrap: break-word;

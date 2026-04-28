@@ -1,6 +1,7 @@
 'use client';
 
-import { BookOpen, FileText, ShieldOff } from 'lucide-react';
+import { useState } from 'react';
+import { BookOpen, FileText, ShieldOff, Copy, Check } from 'lucide-react';
 import { Citation } from '@/lib/types';
 
 interface MessageBubbleProps {
@@ -19,12 +20,32 @@ function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+function isTableRow(line: string): boolean {
+  return line.trim().startsWith('|') && line.trim().endsWith('|');
+}
+
+function isSeparatorRow(line: string): boolean {
+  return isTableRow(line) && /^[\s|:|-]+$/.test(line);
+}
+
+function parseTableCells(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim());
+}
+
 function renderContent(text: string) {
-  // Enhanced markdown-like rendering with better formatting
+  // Enhanced markdown-like rendering with bold, lists, tables
   const lines = text.split('\n');
   const elements: React.ReactNode[] = [];
   let inList = false;
   let listItems: React.ReactNode[] = [];
+  // Table accumulation
+  let tableLines: string[] = [];
+  let inTable = false;
 
   const flushList = (index: number) => {
     if (inList && listItems.length > 0) {
@@ -38,8 +59,88 @@ function renderContent(text: string) {
     }
   };
 
+  const flushTable = (index: number) => {
+    if (!inTable || tableLines.length === 0) return;
+    inTable = false;
+
+    // Must have at least a header + separator row
+    if (tableLines.length < 2) {
+      // Render as plain text if not a valid table
+      tableLines.forEach((tl, ti) =>
+        elements.push(<p key={`tp-${index}-${ti}`}>{tl}</p>)
+      );
+      tableLines = [];
+      return;
+    }
+
+    const headerCells = parseTableCells(tableLines[0]);
+    // tableLines[1] is separator — skip it
+    const dataRows = tableLines.slice(2);
+
+    elements.push(
+      <div key={`table-wrap-${index}`} className="md-table-wrap">
+        <table className="md-table">
+          <thead>
+            <tr>
+              {headerCells.map((cell, ci) => (
+                <th key={ci}>{processInline(cell)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {dataRows
+              .filter((row) => isTableRow(row))
+              .map((row, ri) => (
+                <tr key={ri}>
+                  {parseTableCells(row).map((cell, ci) => (
+                    <td key={ci}>{processInline(cell)}</td>
+                  ))}
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      </div>
+    );
+    tableLines = [];
+  };
+
+  // Process inline formatting (bold + plain)
+  const processInline = (text: string): React.ReactNode => {
+    const parts: React.ReactNode[] = [];
+    const boldRegex = /\*\*([^*]+)\*\*/g;
+    let lastIndex = 0;
+    let key = 0;
+    let match;
+
+    while ((match = boldRegex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push(text.substring(lastIndex, match.index));
+      }
+      parts.push(<strong key={`bold-${key++}`}>{match[1]}</strong>);
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < text.length) {
+      parts.push(text.substring(lastIndex));
+    }
+    return parts.length > 0 ? <>{parts}</> : text;
+  };
+
   lines.forEach((line, i) => {
     const trimmed = line.trim();
+
+    // ── Table detection ───────────────────────────────────────────────────
+    if (isTableRow(trimmed)) {
+      // flush list before starting a table
+      flushList(i);
+      inTable = true;
+      tableLines.push(trimmed);
+      return;
+    }
+
+    // Line is NOT a table row — flush any accumulated table
+    if (inTable) {
+      flushTable(i);
+    }
 
     // Empty line - add spacing
     if (!trimmed) {
@@ -47,32 +148,6 @@ function renderContent(text: string) {
       elements.push(<div key={`space-${i}`} style={{ height: 8 }} />);
       return;
     }
-
-    // Process inline formatting
-    const processInline = (text: string) => {
-      const parts: React.ReactNode[] = [];
-      let remaining = text;
-      let key = 0;
-
-      // Bold: **text**
-      const boldRegex = /\*\*([^*]+)\*\*/g;
-      let lastIndex = 0;
-      let match;
-
-      while ((match = boldRegex.exec(text)) !== null) {
-        if (match.index > lastIndex) {
-          parts.push(text.substring(lastIndex, match.index));
-        }
-        parts.push(<strong key={`bold-${key++}`}>{match[1]}</strong>);
-        lastIndex = match.index + match[0].length;
-      }
-
-      if (lastIndex < text.length) {
-        parts.push(text.substring(lastIndex));
-      }
-
-      return parts.length > 0 ? parts : text;
-    };
 
     // List item: starts with -, •, *, or number.
     if (trimmed.match(/^[-•*]\s/) || trimmed.match(/^\d+\.\s/)) {
@@ -90,24 +165,25 @@ function renderContent(text: string) {
     flushList(i);
 
     // Heading: starts with # or is all caps and short
-    const isHeading = trimmed.startsWith('#') || 
-                     (trimmed === trimmed.toUpperCase() && 
-                      trimmed.length < 60 && 
-                      trimmed.length > 3 &&
-                      !trimmed.includes('[Page'));
+    const isHeading =
+      trimmed.startsWith('#') ||
+      (trimmed === trimmed.toUpperCase() &&
+        trimmed.length < 60 &&
+        trimmed.length > 3 &&
+        !trimmed.includes('[Page'));
 
     if (isHeading) {
       const headingText = trimmed.replace(/^#+\s*/, '');
       elements.push(
-        <h3 
-          key={`heading-${i}`} 
-          style={{ 
-            fontWeight: 600, 
+        <h3
+          key={`heading-${i}`}
+          style={{
+            fontWeight: 600,
             fontSize: '15px',
             marginBottom: 8,
             marginTop: 12,
             color: 'var(--text-primary)',
-            letterSpacing: '-0.2px'
+            letterSpacing: '-0.2px',
           }}
         >
           {processInline(headingText)}
@@ -118,21 +194,18 @@ function renderContent(text: string) {
 
     // Regular paragraph
     elements.push(
-      <p 
-        key={`p-${i}`} 
-        style={{ 
-          marginBottom: 10, 
-          lineHeight: 1.7,
-          color: 'var(--text-primary)'
-        }}
+      <p
+        key={`p-${i}`}
+        style={{ marginBottom: 10, lineHeight: 1.7, color: 'var(--text-primary)' }}
       >
         {processInline(trimmed)}
       </p>
     );
   });
 
-  // Flush any remaining list
+  // Flush any remaining list or table
   flushList(lines.length);
+  flushTable(lines.length);
 
   return <div className="message-content">{elements}</div>;
 }
@@ -160,12 +233,21 @@ export default function MessageBubble({
   timestamp,
   isError,
 }: MessageBubbleProps) {
+  const [copied, setCopied] = useState(false);
+
   const hasCitations = sources && sources.length > 0;
   // isGrounded is undefined for user messages — treat undefined as true
   const isRefusal = role === 'assistant' && isGrounded === false;
   const isMultiPdf = hasCitations
     ? new Set(sources.map((s) => s.pdf_name)).size > 1
     : false;
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(content).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
 
   return (
     <div className={`message-wrapper ${role}`}>
@@ -185,9 +267,22 @@ export default function MessageBubble({
       {/* Bubble + (optional) citation block */}
       <div style={{ maxWidth: '72%', display: 'flex', flexDirection: 'column' }}>
         <div
-          className={`message-bubble ${role} ${isError ? 'error-bubble' : ''} ${isRefusal ? 'refusal-bubble' : ''} ${hasCitations ? 'has-citations' : ''}`}
+          className={`message-bubble ${role} ${isError ? 'error-bubble' : ''} ${isRefusal ? 'refusal-bubble' : ''} ${hasCitations ? 'has-citations' : ''} ${role === 'assistant' ? 'bubble-copyable' : ''}`}
         >
           {renderContent(content)}
+
+          {/* Copy button — assistant messages only, shown on bubble hover */}
+          {role === 'assistant' && content && (
+            <button
+              className={`btn-copy-msg ${copied ? 'copied' : ''}`}
+              onClick={handleCopy}
+              title={copied ? 'Copied!' : 'Copy response'}
+              aria-label="Copy message"
+            >
+              {copied ? <Check size={11} /> : <Copy size={11} />}
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          )}
         </div>
 
         {/* Citations */}
