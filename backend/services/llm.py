@@ -244,63 +244,68 @@ Then provide your response with citations. Remember: Answer ONLY from the contex
         stream=True,
     )
 
-    full_response = ""
+    full_response_raw = ""
     tag_stripped = False
+    is_grounded_from_tag = None
     
     for chunk in stream:
         if chunk.choices[0].delta.content:
             text = chunk.choices[0].delta.content
-            full_response += text
+            full_response_raw += text
             
             # Strip [GROUNDED] or [REFUSED] tags from the beginning
             if not tag_stripped:
-                if full_response.startswith("[GROUNDED]"):
-                    if len(full_response) > 10:  # Tag complete
-                        # Yield everything after the tag
-                        clean_start = full_response[10:].lstrip()
+                raw_stripped = full_response_raw.lstrip()
+                if raw_stripped.startswith("[GROUNDED]"):
+                    if len(raw_stripped) >= 10:  # Tag complete
+                        is_grounded_from_tag = True
+                        clean_start = raw_stripped[10:].lstrip()
                         if clean_start:
                             yield clean_start
-                        full_response = clean_start
                         tag_stripped = True
                     # Don't yield yet, wait for complete tag
                     continue
-                elif full_response.startswith("[REFUSED]"):
-                    if len(full_response) > 9:  # Tag complete
-                        clean_start = full_response[9:].lstrip()
+                elif raw_stripped.startswith("[REFUSED]"):
+                    if len(raw_stripped) >= 9:  # Tag complete
+                        is_grounded_from_tag = False
+                        clean_start = raw_stripped[9:].lstrip()
                         if clean_start:
                             yield clean_start
-                        full_response = clean_start
                         tag_stripped = True
                     continue
-                elif len(full_response) > 10:
+                elif len(raw_stripped) > 10:
                     # No tag found, start yielding
                     tag_stripped = True
-                    yield full_response
+                    yield raw_stripped
                     continue
             else:
-                # Tag already stripped, yield normally
-                yield text
+                # Tag already stripped.
+                # Only yield chunks for grounded responses; buffer refusals silently
+                # so the caller can send a proper 'refusal' SSE event.
+                if is_grounded_from_tag is not False:
+                    yield text
     
     # Process final response (same logic as non-streaming)
-    refusal_patterns = [
-        "cannot find an answer",
-        "does not contain",
-        "not addressed in",
-        "no information about",
-        "not covered in",
-        "outside the scope",
-    ]
+    full_text = full_response_raw.strip()
 
-    # Determine is_grounded (same logic as non-streaming)
-    original_response = full_response  # Keep for pattern matching
-    if "[GROUNDED]" in full_response:
-        full_response = full_response.replace("[GROUNDED]", "").strip()
-        is_grounded = True
-    elif "[REFUSED]" in full_response:
-        full_response = full_response.replace("[REFUSED]", "").strip()
-        is_grounded = False
+    # Determine is_grounded
+    if is_grounded_from_tag is not None:
+        is_grounded = is_grounded_from_tag
+        if is_grounded:
+            final_text = full_text.replace("[GROUNDED]", "", 1).strip()
+        else:
+            final_text = full_text.replace("[REFUSED]", "", 1).strip()
     else:
-        # Fallback: check refusal patterns
-        is_grounded = not any(pattern in full_response.lower() for pattern in refusal_patterns)
+        # Fallback for rare non-compliant outputs
+        refusal_patterns = [
+            "cannot find an answer",
+            "does not contain",
+            "not addressed in",
+            "no information about",
+            "not covered in",
+            "outside the scope",
+        ]
+        is_grounded = not any(pattern in full_text.lower() for pattern in refusal_patterns)
+        final_text = full_text
     
-    return full_response, is_grounded
+    return final_text, is_grounded

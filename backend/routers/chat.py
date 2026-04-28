@@ -870,19 +870,27 @@ async def chat_stream(request: ChatRequest):
                 yield f"data: {json.dumps({'type': 'error', 'message': 'LLM generation failed'})}\n\n"
                 return
 
-            # Build citations
+            # ── Soft refusal path (LLM returned [REFUSED] tag) ───────────────
+            # No chunk events were yielded — send a 'refusal' event that
+            # matches the hard-refusal path so the frontend handles them
+            # identically (refusal badge, no citation chips).
+            if not is_grounded:
+                yield f"data: {json.dumps({'type': 'refusal', 'content': full_response})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'is_grounded': False, 'sources': [], 'confidence_level': None, 'num_sources': 0, 'retrieval_score': retrieval_score})}\n\n"
+                _persist_turn(request.session_id, request.message, full_response)
+                return
+
+            # ── Grounded path ─────────────────────────────────────────────────
             citations = _build_citations(chunks)
-            
-            # Calculate confidence
+
             confidence_level = "low"
             if retrieval_score >= 0.40:
                 confidence_level = "high"
             elif retrieval_score >= 0.28:
                 confidence_level = "medium"
 
-            # Send done event with metadata
-            yield f"data: {json.dumps({'type': 'done', 'is_grounded': is_grounded, 'sources': [c.dict() for c in citations], 'confidence_level': confidence_level if is_grounded else None, 'num_sources': len(citations) if is_grounded else 0, 'retrieval_score': retrieval_score})}\n\n"
-            
+            yield f"data: {json.dumps({'type': 'done', 'is_grounded': True, 'sources': [c.dict() for c in citations], 'confidence_level': confidence_level, 'num_sources': len(citations), 'retrieval_score': retrieval_score})}\n\n"
+
             # Persist the turn
             _persist_turn(request.session_id, request.message, full_response)
 

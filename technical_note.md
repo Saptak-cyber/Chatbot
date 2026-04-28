@@ -64,8 +64,8 @@ User message
     ▼
 [3] Semantic retrieval (query_chunks)
     embed_query (BGE + instruction prefix)
-    → Qdrant cosine search (top_k × 3 child chunks)
-    → Auto-merge by parent_id → top_k unique parent contexts
+    → Qdrant cosine search (top_k=10, min_score=0.20)
+    → Returns ranked flat chunks sorted by cosine score
     │
     ▼
 [4] Hard refusal gate
@@ -86,16 +86,19 @@ User message
 
 ## 4. Key Design Decisions
 
-### 4.1 Hierarchical (Small-to-Big) Chunking
+### 4.1 Flat Semantic Chunking (Threshold=88)
 
-**Decision:** Two-level chunk hierarchy per page.
+**Decision:** Single-level semantic chunking per page using `SemanticSplitterNodeParser`.
 
-- **Child chunks** (~96 tokens) — produced by `SemanticSplitterNodeParser` (threshold=88). These are embedded and stored in Qdrant. Small size → high cosine precision.
-- **Parent chunk** (full page text, ~400 tokens) — stored in the child's Qdrant payload as `parent_text`. Excludes cross-page tail so it stays section-coherent.
+- **Chunks** (~150–300 tokens) — produced by `SemanticSplitterNodeParser` with `breakpoint_threshold=88`. Lower threshold than the default produces more granular, semantically dense chunks → higher cosine precision at retrieval time.
+- Each chunk carries a **contextual header** injected before the page text: `"Document: file.pdf | Section: 3. Leave Policy | Page: 7"` — encoding document position directly into the embedding space.
+- A **cross-page tail overlap** (last 3 sentences of page N prepended to page N+1) prevents paragraphs split across page boundaries from losing context.
 
-**Retrieval:** Query matches children; results are deduplicated by `parent_id`; the LLM receives parent texts. This is the "search small, return big" (small-to-big) pattern.
+**Retrieval:** `query_chunks` embeds the rewritten query with a BGE instruction prefix, runs cosine search against Qdrant, and returns the top-10 flat chunks above `min_score=0.20`.
 
-**Rationale:** Small vectors give precise similarity matching; large parent context gives the LLM enough surrounding text to answer accurately without hallucinating missing detail.
+**Rationale:** Flat chunking avoids sending full-page parent texts to the LLM, staying well within the Groq free-tier 6,000 TPM limit. Semantic boundaries (rather than fixed-size windows) preserve meaning and improve citation accuracy.
+
+**Trade-off:** Slightly less surrounding context per chunk compared to a parent-retrieval strategy, but eliminates 413 token-limit errors on the Groq free tier.
 
 ### 4.2 Strict PDF Grounding
 
@@ -133,12 +136,13 @@ Citation markers (`[Page N — file.pdf]`) are always preserved in their origina
 | Decision | Benefit | Cost |
 |---|---|---|
 | HF Inference API for embeddings | No GPU required, zero local memory | Network latency per embed call; rate-limited |
-| Groq for LLM | ~700 tokens/s, effectively real-time streaming | Limited context window; model choice tied to Groq catalogue |
+| Groq `llama-3.1-8b-instant` | ~700 tokens/s, real-time streaming | 6K TPM free-tier cap; smaller model than 70B |
 | Qdrant Cloud free tier | No infra management | 1 GB storage cap; cold-start latency after idle |
-| Page = parent boundary | Simple, accurate page citations | Cross-section parents when a section spans pages |
-| localStorage sessions | Zero backend state, instant | No cross-device sync; data lost on browser clear |
+| Flat semantic chunking (not hierarchical) | Stays within 6K TPM; simpler retrieval | Less surrounding context per chunk than full-page parent retrieval |
 | Semantic chunking (not fixed-size) | Meaning-preserving boundaries | ~2× slower indexing due to embedding calls during split |
+| localStorage sessions | Zero backend state, instant | No cross-device sync; data lost on browser clear |
 | Flat Qdrant collection | Simple, no join logic | Cannot do true multi-hop hierarchical retrieval |
+| 8-language support | Broad accessibility | Citation format must stay Latin-script; LLM accuracy varies by language |
 
 ---
 
