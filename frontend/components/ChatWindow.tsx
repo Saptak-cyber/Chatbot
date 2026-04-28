@@ -26,12 +26,14 @@ interface ChatWindowProps {
   activePdfIds: string[];
   pdfs: PDFInfo[];
   sessionId: string;
+  onThreadUpdate: (update: { title?: string; preview?: string; messageCount?: number }) => void;
 }
 
 export default function ChatWindow({
   activePdfIds,
   pdfs,
   sessionId,
+  onThreadUpdate,
 }: ChatWindowProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -67,15 +69,17 @@ export default function ChatWindow({
     return () => window.removeEventListener('keydown', handleGlobalKey);
   }, []);
 
-  // Restore messages from localStorage on mount
+  // Clear messages and reload from storage when session changes
   useEffect(() => {
+    setMessages([]);
+    hasLoadedFromStorage.current = false;
     const stored = localStorage.getItem(storageKey);
     if (stored) {
       try {
         const parsed = JSON.parse(stored) as (Omit<Message, 'timestamp'> & { timestamp: string })[];
         setMessages(parsed.map((m) => ({ ...m, timestamp: new Date(m.timestamp) })));
       } catch {
-        // Corrupted data — start fresh
+        // Corrupted — start fresh
       }
     }
     hasLoadedFromStorage.current = true;
@@ -137,6 +141,12 @@ export default function ChatWindow({
       timestamp: new Date(),
     };
 
+    // Auto-title the thread on first message
+    const isFirst = messages.filter((m) => m.role === 'user').length === 0;
+    if (isFirst) {
+      onThreadUpdate({ title: userMessage.content.slice(0, 50) });
+    }
+
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
     if (textareaRef.current) {
@@ -178,15 +188,14 @@ export default function ChatWindow({
             console.log('Metadata:', data);
           },
           onDone: (data: any) => {
-            // Wait for queue to finish, then update metadata
             const checkQueue = setInterval(() => {
               if (wordQueueRef.current.length === 0) {
                 clearInterval(checkQueue);
                 isStreamingRef.current = false;
                 currentMessageIdRef.current = null;
-                
-                setMessages((prev) =>
-                  prev.map((msg) =>
+
+                setMessages((prev) => {
+                  const updated = prev.map((msg) =>
                     msg.id === assistantId
                       ? {
                           ...msg,
@@ -197,8 +206,17 @@ export default function ChatWindow({
                           num_sources: data.num_sources,
                         }
                       : msg
-                  )
-                );
+                  );
+                  // Update thread preview with latest assistant message
+                  const assistantMsg = updated.find((m) => m.id === assistantId);
+                  if (assistantMsg) {
+                    onThreadUpdate({
+                      preview: assistantMsg.content.slice(0, 70).replace(/\n/g, ' '),
+                      messageCount: updated.length,
+                    });
+                  }
+                  return updated;
+                });
                 setIsLoading(false);
               }
             }, 50);

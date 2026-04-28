@@ -5,6 +5,16 @@ export interface PDFInfo {
   chunk_count: number;
 }
 
+export interface ConversationThread {
+  id: string;
+  title: string;
+  createdAt: number;   // epoch ms
+  updatedAt: number;   // epoch ms
+  activePdfIds: string[];
+  previewText: string;
+  messageCount: number;
+}
+
 export interface Citation {
   pdf_name: string;
   page_number: number;
