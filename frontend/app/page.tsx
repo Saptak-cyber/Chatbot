@@ -69,10 +69,38 @@ export default function HomePage() {
     }
   }, []);
 
-  // Load PDFs from backend
+  // Load PDFs from backend and clean up any orphaned IDs from localStorage
   useEffect(() => {
-    listPDFs().then(setPdfs).catch(() => {});
-  }, []);
+    listPDFs()
+      .then((loadedPdfs) => {
+        setPdfs(loadedPdfs);
+        const validIds = new Set(loadedPdfs.map((p) => p.id));
+
+        setActivePdfIds((prev) => {
+          const cleaned = prev.filter((id) => validIds.has(id));
+          if (cleaned.length !== prev.length) {
+            // Update the active session in localStorage if we removed phantom IDs
+            setConversations((threads) => {
+              const updated = threads.map((c) =>
+                c.id === activeSessionId ? { ...c, activePdfIds: cleaned } : c
+              );
+              saveThreads(updated);
+              return updated;
+            });
+          }
+          return cleaned;
+        });
+
+        setSelectedPdfIds((prev) => {
+          const next = new Set(prev);
+          next.forEach((id) => {
+            if (!validIds.has(id)) next.delete(id);
+          });
+          return next;
+        });
+      })
+      .catch(() => {});
+  }, [activeSessionId]);
 
   // ── Conversation actions ───────────────────────────────────────────────────
 
