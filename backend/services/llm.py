@@ -3,7 +3,7 @@ Groq LLM client for Llama 3.1 8B inference.
 Includes a strict system prompt to ensure PDF-only grounding.
 Supports 8 languages natively supported by Llama 3.1 8B.
 """
-from groq import Groq
+from groq import AsyncGroq
 from typing import List, Dict
 import os
 import logging
@@ -12,7 +12,7 @@ from langsmith import traceable
 
 logger = logging.getLogger(__name__)
 
-_client: Groq | None = None
+_client: AsyncGroq | None = None
 
 # ── Language support ─────────────────────────────────────────────────────────
 # Only languages officially supported by Llama 3.1 8B Instant (Meta's list).
@@ -167,19 +167,19 @@ def _build_system_prompt(language: str = "auto") -> str:
     return _BASE_SYSTEM_PROMPT + lang_section
 
 
-def get_client() -> Groq:
+def get_client() -> AsyncGroq:
     global _client
     if _client is None:
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
             raise ValueError("GROQ_API_KEY environment variable is not set")
-        _client = Groq(api_key=api_key)
-        logger.info("Groq client initialized.")
+        _client = AsyncGroq(api_key=api_key)
+        logger.info("Groq async client initialized.")
     return _client
 
 
 @traceable(name="generate_response", run_type="llm")
-def generate_response(
+async def generate_response(
     query: str,
     context_chunks: List[Dict],
     history: List[Dict],
@@ -226,7 +226,7 @@ Then provide your response with citations. Remember: Answer ONLY from the contex
 
     logger.info(f"Calling Groq with {len(context_chunks)} context chunks, {len(history)} history messages.")
 
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=messages,
         temperature=0.0,  # Changed from 0.1 to 0.0 for maximum consistency
@@ -254,7 +254,7 @@ Then provide your response with citations. Remember: Answer ONLY from the contex
 
 
 @traceable(name="generate_response_stream", run_type="llm")
-def generate_response_stream(
+async def generate_response_stream(
     query: str,
     context_chunks: List[Dict],
     history: List[Dict],
@@ -297,7 +297,7 @@ Then provide your response with citations. Remember: Answer ONLY from the contex
     logger.info(f"Streaming response with {len(context_chunks)} context chunks, {len(history)} history messages.")
 
     # Stream the response
-    stream = client.chat.completions.create(
+    stream = await client.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=messages,
         temperature=0.0,
@@ -309,7 +309,7 @@ Then provide your response with citations. Remember: Answer ONLY from the contex
     tag_stripped = False
     is_grounded_from_tag = None
     
-    for chunk in stream:
+    async for chunk in stream:
         if chunk.choices[0].delta.content:
             text = chunk.choices[0].delta.content
             full_response_raw += text
@@ -330,8 +330,7 @@ Then provide your response with citations. Remember: Answer ONLY from the contex
                     if len(raw_stripped) >= 9:  # Tag complete
                         is_grounded_from_tag = False
                         clean_start = raw_stripped[9:].lstrip()
-                        if clean_start:
-                            yield clean_start
+                        # Do NOT yield clean_start for refusals, buffer silently
                         tag_stripped = True
                     continue
                 elif len(raw_stripped) > 10:
@@ -369,4 +368,4 @@ Then provide your response with citations. Remember: Answer ONLY from the contex
         is_grounded = not any(pattern in full_text.lower() for pattern in refusal_patterns)
         final_text = full_text
     
-    return final_text, is_grounded
+    yield {"done": True, "text": final_text, "is_grounded": is_grounded}

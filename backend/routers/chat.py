@@ -71,7 +71,7 @@ def _history_to_dicts(lc_history: PostgresChatMessageHistory) -> List[Dict]:
 
 
 @traceable(name="summarize_conversation", run_type="llm")
-def _summarize_messages(messages: list, existing_summary: str = "") -> str:
+async def _summarize_messages(messages: list, existing_summary: str = "") -> str:
     """Progressively summarize a list of LangChain BaseMessages using Groq.
 
     If there is an existing running summary it is extended rather than replaced,
@@ -102,7 +102,7 @@ def _summarize_messages(messages: list, existing_summary: str = "") -> str:
         )
         
         client = get_client()
-        compress_resp = client.chat.completions.create(
+        compress_resp = await client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": compress_prompt}],
             temperature=0.0,
@@ -121,7 +121,7 @@ def _summarize_messages(messages: list, existing_summary: str = "") -> str:
     prompt += f"New lines of conversation:\n{conversation_text}\n\nNew summary:"
 
     client = get_client()
-    resp = client.chat.completions.create(
+    resp = await client.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
@@ -131,7 +131,7 @@ def _summarize_messages(messages: list, existing_summary: str = "") -> str:
 
 
 @traceable(name="generate_from_history", run_type="llm")
-def _generate_from_history(query: str, history: List[Dict], query_type: str, language: str = "auto") -> tuple[str, bool]:
+async def _generate_from_history(query: str, history: List[Dict], query_type: str, language: str = "auto") -> tuple[str, bool]:
     """Generate a response based only on conversation history, without retrieving new chunks.
     
     Used for greetings, confirmations, clarifications, and history-based questions.
@@ -220,7 +220,7 @@ def _generate_from_history(query: str, history: List[Dict], query_type: str, lan
     
     try:
         client = get_client()
-        resp = client.chat.completions.create(
+        resp = await client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,  # Slightly creative for natural responses
@@ -241,7 +241,7 @@ def _generate_from_history(query: str, history: List[Dict], query_type: str, lan
         return "I apologize, but I'm having trouble processing your request. Could you please rephrase?", False
 
 
-def _maybe_summarize(session_id: str) -> None:
+async def _maybe_summarize(session_id: str) -> None:
     """Summarize conversation in fixed batches of SUMMARY_INTERVAL_TURNS exchanges.
 
     This intentionally summarizes at Q5, Q10, Q15... (every 5 full turns),
@@ -276,7 +276,7 @@ def _maybe_summarize(session_id: str) -> None:
 
             to_summarize = conv_msgs
 
-            new_summary = _summarize_messages(to_summarize, existing_summary)
+            new_summary = await _summarize_messages(to_summarize, existing_summary)
 
             # Rebuild Neon history with only the rolling summary.
             lc_history.clear()
@@ -291,7 +291,7 @@ def _maybe_summarize(session_id: str) -> None:
 
 
 @traceable(name="is_retrieval_required", run_type="llm")
-def _is_retrieval_required(query: str, history: List[Dict]) -> tuple[bool, str]:
+async def _is_retrieval_required(query: str, history: List[Dict]) -> tuple[bool, str]:
     """Determine if retrieval is needed or if the query can be answered from conversation history.
     
     Uses the same context as generate_response: full history (including summary if present).
@@ -412,7 +412,7 @@ def _is_retrieval_required(query: str, history: List[Dict]) -> tuple[bool, str]:
     try:
         from services.llm import get_client
         client = get_client()
-        resp = client.chat.completions.create(
+        resp = await client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
@@ -465,7 +465,7 @@ def _history_block_for_rewrite(history: List[Dict]) -> str:
 
 
 @traceable(name="rewrite_query", run_type="llm")
-def _rewrite_query(query: str, history: List[Dict], query_type: str = "new_question") -> str:
+async def _rewrite_query(query: str, history: List[Dict], query_type: str = "new_question") -> str:
     """Rewrite a follow-up query into a standalone query using conversation history.
 
     ``history`` should be at most the last two user/assistant turns (see
@@ -583,7 +583,7 @@ def _rewrite_query(query: str, history: List[Dict], query_type: str = "new_quest
     try:
         from services.llm import get_client
         client = get_client()
-        resp = client.chat.completions.create(
+        resp = await client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
@@ -637,7 +637,7 @@ async def chat(request: ChatRequest):
     # STEP 1: Determine if retrieval is required
     # Pass full history (including summary) for consistent context
     # ═══════════════════════════════════════════════════════════════════════════
-    needs_retrieval, query_type = _is_retrieval_required(request.message, recent_history)
+    needs_retrieval, query_type = await _is_retrieval_required(request.message, recent_history)
     
     # ═══════════════════════════════════════════════════════════════════════════
     # BRANCH A: No retrieval needed (greetings, confirmations, history-based)
@@ -647,7 +647,7 @@ async def chat(request: ChatRequest):
         logger.info(f"Skipping retrieval for query_type='{query_type}'")
         
         try:
-            response_text, is_grounded = _generate_from_history(
+            response_text, is_grounded = await _generate_from_history(
                 request.message, recent_history, query_type,
                 language=request.response_language or "auto",
             )
@@ -656,7 +656,7 @@ async def chat(request: ChatRequest):
             raise HTTPException(status_code=500, detail="Failed to generate response.")
         
         # Persist the turn
-        _persist_turn(request.session_id, request.message, response_text)
+        await _persist_turn(request.session_id, request.message, response_text)
         
         return ChatResponse(
             response=response_text,
@@ -676,14 +676,14 @@ async def chat(request: ChatRequest):
     # Rewrite query for better retrieval (especially important for elaborations)
     # Only rewrite if it's an elaboration - new questions should not be rewritten
     # Pass last 4 messages (2 turns) for rewriting - no character limit
-    retrieval_query = _rewrite_query(
+    retrieval_query = await _rewrite_query(
         request.message, 
         recent_history[-REWRITE_QUERY_MAX_MESSAGES:] if len(recent_history) > REWRITE_QUERY_MAX_MESSAGES else recent_history,
         query_type
     )
 
     try:
-        chunks = query_chunks(
+        chunks = await query_chunks(
             query=retrieval_query,
             pdf_ids=request.active_pdf_ids,
             top_k=10,
@@ -698,7 +698,7 @@ async def chat(request: ChatRequest):
     # outside the PDF's content. Refuse immediately without calling the LLM.
     if not chunks:
         response_text = get_hard_refusal_text(request.response_language or "auto")
-        _persist_turn(request.session_id, request.message, response_text)
+        await _persist_turn(request.session_id, request.message, response_text)
         return ChatResponse(
             response=response_text,
             session_id=request.session_id,
@@ -711,7 +711,7 @@ async def chat(request: ChatRequest):
 
     # Generate grounded response via Groq using the rewritten query for consistency
     try:
-        response_text, is_grounded = generate_response(
+        response_text, is_grounded = await generate_response(
             query=retrieval_query,
             context_chunks=chunks,
             history=recent_history,
@@ -722,7 +722,7 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=f"LLM error: {str(e)}")
 
     # Persist the new turn to Neon
-    _persist_turn(request.session_id, request.message, response_text)
+    await _persist_turn(request.session_id, request.message, response_text)
 
     citations = _build_citations(chunks)
     
@@ -781,14 +781,14 @@ async def chat_stream(request: ChatRequest):
                 logger.error(f"Failed to load conversation history: {e}")
 
             # Determine if retrieval is required
-            needs_retrieval, query_type = _is_retrieval_required(request.message, recent_history)
+            needs_retrieval, query_type = await _is_retrieval_required(request.message, recent_history)
             
             # BRANCH A: No retrieval needed
             if not needs_retrieval:
                 logger.info(f"Skipping retrieval for query_type='{query_type}' (streaming)")
                 
                 try:
-                    response_text, is_grounded = _generate_from_history(
+                    response_text, is_grounded = await _generate_from_history(
                         request.message, recent_history, query_type,
                         language=request.response_language or "auto",
                     )
@@ -810,14 +810,14 @@ async def chat_stream(request: ChatRequest):
                 yield f"data: {json.dumps({'type': 'done', 'is_grounded': is_grounded, 'sources': [], 'confidence_level': None, 'num_sources': 0})}\n\n"
                 
                 # Persist the turn
-                _persist_turn(request.session_id, request.message, response_text)
+                await _persist_turn(request.session_id, request.message, response_text)
                 return
             
             # BRANCH B: Retrieval needed
             logger.info(f"Retrieval required for query_type='{query_type}' (streaming)")
             
             # Rewrite query
-            retrieval_query = _rewrite_query(
+            retrieval_query = await _rewrite_query(
                 request.message,
                 recent_history[-REWRITE_QUERY_MAX_MESSAGES:] if len(recent_history) > REWRITE_QUERY_MAX_MESSAGES else recent_history,
                 query_type
@@ -827,7 +827,7 @@ async def chat_stream(request: ChatRequest):
 
             # Retrieve chunks
             try:
-                chunks = query_chunks(
+                chunks = await query_chunks(
                     query=retrieval_query,
                     pdf_ids=request.active_pdf_ids,
                     top_k=10,
@@ -843,7 +843,7 @@ async def chat_stream(request: ChatRequest):
                 refusal_text = get_hard_refusal_text(request.response_language or "auto")
                 yield f"data: {json.dumps({'type': 'refusal', 'content': refusal_text})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'is_grounded': False, 'sources': []})}\n\n"
-                _persist_turn(request.session_id, request.message, refusal_text)
+                await _persist_turn(request.session_id, request.message, refusal_text)
                 return
 
             retrieval_score = round(chunks[0]["score"], 4)
@@ -851,9 +851,6 @@ async def chat_stream(request: ChatRequest):
             # Send metadata first
             yield f"data: {json.dumps({'type': 'metadata', 'retrieval_score': retrieval_score})}\n\n"
 
-            # Stream the response and get return value
-            # Python generators with return values: the return value is accessible
-            # via the StopIteration exception's value attribute when the generator exhausts
             full_response = ""
             is_grounded = True
             
@@ -867,35 +864,30 @@ async def chat_stream(request: ChatRequest):
                 
                 # Stream chunks to client and collect full response
                 import asyncio
-                try:
-                    while True:
-                        chunk_text = next(gen)
-                        full_response += chunk_text
-                        yield f"data: {json.dumps({'type': 'chunk', 'content': chunk_text})}\n\n"
-                        # Yield control to event loop to ensure streaming
-                        await asyncio.sleep(0)
-                except StopIteration as stop:
-                    # Generator exhausted - capture return value
-                    if stop.value:
-                        returned_response, is_grounded = stop.value
-                        # Use the returned response if it differs (shouldn't, but for safety)
-                        if returned_response and returned_response != full_response:
-                            logger.warning("Streamed response differs from returned response")
-                            full_response = returned_response
+                async for chunk in gen:
+                    if isinstance(chunk, dict) and chunk.get("done"):
+                        full_response = chunk["text"]
+                        is_grounded = chunk["is_grounded"]
+                        # Let the loop finish naturally instead of breaking
+                        # to prevent GeneratorExit in LangSmith
+                        continue
+                    
+                    chunk_text = chunk
+                    full_response += chunk_text
+                    yield f"data: {json.dumps({'type': 'chunk', 'content': chunk_text})}\n\n"
+                    # Yield control to event loop to ensure streaming
+                    await asyncio.sleep(0)
                     
             except Exception as e:
                 logger.error(f"LLM streaming failed: {e}")
                 yield f"data: {json.dumps({'type': 'error', 'message': 'LLM generation failed'})}\n\n"
                 return
 
-            # ── Soft refusal path (LLM returned [REFUSED] tag) ───────────────
-            # No chunk events were yielded — send a 'refusal' event that
-            # matches the hard-refusal path so the frontend handles them
-            # identically (refusal badge, no citation chips).
+            # Soft refusal path
             if not is_grounded:
                 yield f"data: {json.dumps({'type': 'refusal', 'content': full_response})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'is_grounded': False, 'sources': [], 'confidence_level': None, 'num_sources': 0, 'retrieval_score': retrieval_score})}\n\n"
-                _persist_turn(request.session_id, request.message, full_response)
+                await _persist_turn(request.session_id, request.message, full_response)
                 return
 
             # ── Grounded path ─────────────────────────────────────────────────
@@ -910,7 +902,7 @@ async def chat_stream(request: ChatRequest):
             yield f"data: {json.dumps({'type': 'done', 'is_grounded': True, 'sources': [c.dict() for c in citations], 'confidence_level': confidence_level, 'num_sources': len(citations), 'retrieval_score': retrieval_score})}\n\n"
 
             # Persist the turn
-            _persist_turn(request.session_id, request.message, full_response)
+            await _persist_turn(request.session_id, request.message, full_response)
 
         except Exception as e:
             logger.error(f"Streaming error: {e}")
@@ -944,7 +936,7 @@ async def clear_history(session_id: str):
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def _persist_turn(session_id: str, user_msg: str, assistant_msg: str) -> None:
+async def _persist_turn(session_id: str, user_msg: str, assistant_msg: str) -> None:
     """Append the user/assistant turn to Neon, then compress if needed."""
     try:
         with _db_conn() as conn:
@@ -958,7 +950,7 @@ def _persist_turn(session_id: str, user_msg: str, assistant_msg: str) -> None:
         return
 
     # Summarize old messages once the window is exceeded (non-fatal if it fails)
-    _maybe_summarize(session_id)
+    await _maybe_summarize(session_id)
 
 
 def _build_citations(chunks: List[Dict]) -> List[Citation]:

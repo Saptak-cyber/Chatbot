@@ -2,7 +2,7 @@
 Qdrant Cloud vector store client for storing and querying PDF chunks.
 Uses cosine similarity with metadata filtering by pdf_id.
 """
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Distance,
     VectorParams,
@@ -27,10 +27,10 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 COLLECTION_NAME = "pdf_chunks"
 VECTOR_SIZE = 384  # BGE-small-en-v1.5 embedding dimension (same as all-MiniLM-L6-v2)
 
-_client: Optional[QdrantClient] = None
+_client: Optional[AsyncQdrantClient] = None
 
 
-def get_client():
+async def get_client():
     """Return a singleton Qdrant client and ensure collection exists."""
     global _client
     if _client is None:
@@ -40,29 +40,29 @@ def get_client():
             )
         
         logger.info(f"Initializing Qdrant client at '{QDRANT_URL}'...")
-        _client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+        _client = AsyncQdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
         
         # Create collection if it doesn't exist
-        collections = _client.get_collections().collections
+        collections = (await _client.get_collections()).collections
         collection_names = [c.name for c in collections]
         
         if COLLECTION_NAME not in collection_names:
             logger.info(f"Creating collection '{COLLECTION_NAME}'...")
-            _client.create_collection(
+            await _client.create_collection(
                 collection_name=COLLECTION_NAME,
                 vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
             )
             
             # Create payload index for pdf_id to enable efficient filtering
             from qdrant_client.models import PayloadSchemaType
-            _client.create_payload_index(
+            await _client.create_payload_index(
                 collection_name=COLLECTION_NAME,
                 field_name="pdf_id",
                 field_schema=PayloadSchemaType.KEYWORD,
             )
             logger.info(f"Created payload index for 'pdf_id' field")
         
-        collection_info = _client.get_collection(COLLECTION_NAME)
+        collection_info = await _client.get_collection(COLLECTION_NAME)
         logger.info(
             f"Qdrant collection '{COLLECTION_NAME}' ready. "
             f"Count: {collection_info.points_count}"
@@ -71,17 +71,18 @@ def get_client():
     return _client
 
 
-def add_chunks(chunks: List[Dict[str, Any]]) -> int:
+async def add_chunks(chunks: List[Dict[str, Any]]) -> int:
     """Embed and store chunks in Qdrant. Returns number of chunks stored."""
     from services.embedder import embed_texts
+    import asyncio
 
-    client = get_client()
+    client = await get_client()
 
     texts = [c["text"] for c in chunks]
     metadatas = [c["metadata"] for c in chunks]
 
     # Batch embed
-    embeddings = embed_texts(texts)
+    embeddings = await asyncio.to_thread(embed_texts, texts)
 
     # Create points for Qdrant
     points = []
@@ -101,14 +102,14 @@ def add_chunks(chunks: List[Dict[str, Any]]) -> int:
         )
 
     # Upload to Qdrant
-    client.upsert(collection_name=COLLECTION_NAME, points=points)
+    await client.upsert(collection_name=COLLECTION_NAME, points=points)
 
     logger.info(f"Stored {len(chunks)} chunks in Qdrant.")
     return len(chunks)
 
 
 @traceable(name="query_chunks", run_type="retriever")
-def query_chunks(
+async def query_chunks(
     query: str,
     pdf_ids: List[str],
     top_k: int = 10,
@@ -125,14 +126,15 @@ def query_chunks(
     Returns chunks sorted by cosine similarity (highest first).
     """
     from services.embedder import embed_query
+    import asyncio
 
-    client = get_client()
+    client = await get_client()
 
-    collection_info = client.get_collection(COLLECTION_NAME)
+    collection_info = await client.get_collection(COLLECTION_NAME)
     if collection_info.points_count == 0:
         return []
 
-    query_embedding = embed_query(query)
+    query_embedding = await asyncio.to_thread(embed_query, query)
 
     # Build filter for pdf_ids
     query_filter = None
@@ -147,13 +149,13 @@ def query_chunks(
             )
 
     try:
-        search_result = client.query_points(
+        search_result = (await client.query_points(
             collection_name=COLLECTION_NAME,
             query=query_embedding,
             query_filter=query_filter,
             limit=top_k,
             score_threshold=min_score,
-        ).points
+        )).points
 
         logger.info(f"Qdrant search returned {len(search_result)} results")
         if search_result:
@@ -187,12 +189,12 @@ def query_chunks(
     return chunks
 
 
-def delete_pdf_chunks(pdf_id: str) -> None:
+async def delete_pdf_chunks(pdf_id: str) -> None:
     """Delete all chunks belonging to a given pdf_id."""
-    client = get_client()
+    client = await get_client()
     
     # Delete points matching the pdf_id filter
-    client.delete(
+    await client.delete(
         collection_name=COLLECTION_NAME,
         points_selector=Filter(
             must=[FieldCondition(key="pdf_id", match=MatchValue(value=pdf_id))]
@@ -202,12 +204,12 @@ def delete_pdf_chunks(pdf_id: str) -> None:
     logger.info(f"Deleted all chunks for pdf_id='{pdf_id}'.")
 
 
-def get_pdf_chunk_count(pdf_id: str) -> int:
+async def get_pdf_chunk_count(pdf_id: str) -> int:
     """Count chunks stored for a given pdf_id."""
-    client = get_client()
+    client = await get_client()
     
     # Use scroll to count points with the given pdf_id
-    result = client.scroll(
+    result = await client.scroll(
         collection_name=COLLECTION_NAME,
         scroll_filter=Filter(
             must=[FieldCondition(key="pdf_id", match=MatchValue(value=pdf_id))]
@@ -225,7 +227,7 @@ def get_pdf_chunk_count(pdf_id: str) -> int:
     offset = None
     
     while True:
-        points, offset = client.scroll(
+        points, offset = await client.scroll(
             collection_name=COLLECTION_NAME,
             scroll_filter=Filter(
                 must=[FieldCondition(key="pdf_id", match=MatchValue(value=pdf_id))]
