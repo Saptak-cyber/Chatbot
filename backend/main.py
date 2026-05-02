@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI):
         logger.info("Loading semantic chunker...")
         get_splitter()
         logger.info("Initializing vector store...")
-        get_client()
+        await get_client()
 
         # Ensure Neon chat_messages table exists (idempotent)
         neon_url = os.getenv("NEON_DATABASE_URL")

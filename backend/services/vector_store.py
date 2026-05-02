@@ -114,6 +114,7 @@ async def query_chunks(
     pdf_ids: List[str],
     top_k: int = 10,
     min_score: float = 0.20,
+    dynamic_k: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Query Qdrant for the most relevant chunks filtered to the given pdf_ids.
@@ -160,6 +161,33 @@ async def query_chunks(
         logger.info(f"Qdrant search returned {len(search_result)} results")
         if search_result:
             logger.info(f"Top result score: {search_result[0].score:.4f}")
+            
+            if dynamic_k:
+                top_score = search_result[0].score
+                filtered_result = [search_result[0]]
+                for i in range(1, len(search_result)):
+                    curr_score = search_result[i].score
+                    prev_score = search_result[i-1].score
+                    
+                    # Cutoff heuristics:
+                    # 1. Sudden drop > 0.05 between consecutive chunks
+                    # 2. Score drops below 80% of the top score
+                    score_drop = prev_score - curr_score
+                    relative_score = curr_score / top_score if top_score > 0 else 0
+                    
+                    # if score_drop > 0.1 or relative_score < 0.80:
+                    if relative_score < 0.80:
+                        logger.info(
+                            f"Dynamic k cutoff triggered at index {i}. "
+                            f"Drop: {score_drop:.3f}, Rel: {relative_score:.2f} "
+                            f"(Top: {top_score:.3f})"
+                        )
+                        break
+                    filtered_result.append(search_result[i])
+                
+                search_result = filtered_result
+                logger.info(f"After dynamic k cutoff, retained {len(search_result)} results")
+
     except Exception as e:
         logger.error(f"Qdrant query error: {e}")
         return []
