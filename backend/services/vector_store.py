@@ -1,6 +1,9 @@
 """
 Qdrant Cloud vector store client for storing and querying PDF chunks.
-Uses cosine similarity with metadata filtering by pdf_id.
+
+Provides two retrieval modes:
+  - query_chunks:        Pure vector (cosine) retrieval with dynamic-k cutoff.
+  - query_chunks_hybrid: BM25 + vector → RRF fusion → BGE-reranker-base rerank.
 """
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
@@ -218,9 +221,11 @@ async def query_chunks(
 
 
 async def delete_pdf_chunks(pdf_id: str) -> None:
-    """Delete all chunks belonging to a given pdf_id."""
+    """Delete all chunks belonging to a given pdf_id and bust the BM25 cache."""
+    from services.bm25_store import invalidate as bm25_invalidate
+
     client = await get_client()
-    
+
     # Delete points matching the pdf_id filter
     await client.delete(
         collection_name=COLLECTION_NAME,
@@ -228,8 +233,151 @@ async def delete_pdf_chunks(pdf_id: str) -> None:
             must=[FieldCondition(key="pdf_id", match=MatchValue(value=pdf_id))]
         ),
     )
-    
-    logger.info(f"Deleted all chunks for pdf_id='{pdf_id}'.")
+
+    # Bust the in-memory BM25 index so stale data is never served
+    bm25_invalidate(pdf_id)
+
+    logger.info(f"Deleted all chunks for pdf_id='{pdf_id}' (BM25 cache invalidated).")
+
+
+# ── Hybrid retrieval ──────────────────────────────────────────────────────────
+
+def _rrf_merge(
+    list_a: List[Dict[str, Any]],
+    list_b: List[Dict[str, Any]],
+    k: int = 60,
+) -> List[Dict[str, Any]]:
+    """
+    Reciprocal Rank Fusion of two ranked chunk lists.
+
+    Deduplication key: first 120 characters of the chunk text (robust to
+    minor payload differences between the vector and BM25 paths).
+
+    Formula (original RRF paper, Cormack et al. 2009):
+        score(d) = Σ  1 / (k + rank_i(d))   for each list i that contains d
+
+    Args:
+        list_a: Vector retrieval results (sorted by cosine score desc).
+        list_b: BM25 retrieval results (sorted by BM25 score desc).
+        k:      RRF constant — higher k smooths rank differences.
+
+    Returns:
+        Merged list sorted by RRF score descending.
+    """
+    rrf_scores: Dict[str, float] = {}
+    chunk_map: Dict[str, Dict[str, Any]] = {}
+
+    for ranked_list in (list_a, list_b):
+        for rank, chunk in enumerate(ranked_list, start=1):
+            key = chunk["text"][:120]
+            rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (k + rank)
+            if key not in chunk_map:
+                chunk_map[key] = chunk
+
+    merged = sorted(chunk_map.keys(), key=lambda key: rrf_scores[key], reverse=True)
+    result = []
+    for key in merged:
+        entry = chunk_map[key].copy()
+        entry["rrf_score"] = rrf_scores[key]
+        result.append(entry)
+
+    logger.info(
+        f"RRF merge: {len(list_a)} vector + {len(list_b)} BM25 → {len(result)} unique chunks"
+    )
+    return result
+
+
+@traceable(name="query_chunks_hybrid", run_type="retriever")
+async def query_chunks_hybrid(
+    query: str,
+    pdf_ids: List[str],
+    vector_k: int = 20,
+    bm25_k: int = 20,
+    rerank_n: int = 10,
+    min_score: float = 0.20,
+) -> List[Dict[str, Any]]:
+    """
+    Hybrid retrieval pipeline:
+        1. Vector search (Qdrant cosine, top vector_k)
+        2. BM25 search (in-memory rank-bm25, top bm25_k)
+        3. Reciprocal Rank Fusion → union pool
+        4. BGE-reranker-base reranking → top rerank_n chunks
+        5. Dynamic-k cutoff on reranker scores (relative threshold 0.80)
+
+    Falls back to pure vector results if BM25 or the reranker fails, so
+    the pipeline always returns something useful.
+
+    Returns chunks in the same dict shape as query_chunks:
+        {"text": str, "metadata": dict, "score": float, "reranker_score": float}
+    """
+    import asyncio
+    from services.bm25_store import bm25_search
+    from services.reranker import rerank_chunks
+
+    # ── Stage 1: parallel retrieval ───────────────────────────────────────────
+    vector_task = query_chunks(
+        query, pdf_ids, top_k=vector_k, min_score=min_score, dynamic_k=False
+    )
+    bm25_task = bm25_search(query, pdf_ids, top_k=bm25_k)
+
+    try:
+        vector_chunks, bm25_chunks = await asyncio.gather(vector_task, bm25_task)
+    except Exception as e:
+        logger.error(f"Parallel retrieval error: {e} — falling back to vector-only")
+        vector_chunks = await query_chunks(
+            query, pdf_ids, top_k=vector_k, min_score=min_score, dynamic_k=False
+        )
+        bm25_chunks = []
+
+    logger.info(
+        f"Hybrid retrieval: {len(vector_chunks)} vector chunks, "
+        f"{len(bm25_chunks)} BM25 chunks"
+    )
+
+    if not vector_chunks and not bm25_chunks:
+        logger.info("Both retrievers returned 0 results — out of scope.")
+        return []
+
+    # ── Stage 2: RRF fusion ───────────────────────────────────────────────────
+    pool = _rrf_merge(vector_chunks, bm25_chunks)
+
+    # ── Stage 3: Reranking ────────────────────────────────────────────────────
+    try:
+        final = await rerank_chunks(query, pool, top_n=rerank_n)
+    except Exception as e:
+        logger.warning(f"Reranker failed ({e}) — using top {rerank_n} RRF chunks.")
+        final = pool[:rerank_n]
+        for chunk in final:
+            chunk["reranker_score"] = chunk.get("rrf_score", 0.0)
+
+    # ── Stage 4: Dynamic-k cutoff on reranker scores ────────────────────────────
+    # Discard chunks whose reranker score falls below 80% of the top score.
+    # This mirrors the cosine dynamic-k but operates on the higher-quality
+    # reranker signal, giving a more precise tail prune.
+    if len(final) > 1:
+        top_reranker_score = final[0]["reranker_score"]
+        cutoff_idx = len(final)  # default: keep all
+        for i in range(1, len(final)):
+            relative = (
+                final[i]["reranker_score"] / top_reranker_score
+                if top_reranker_score > 0
+                else 0.0
+            )
+            if relative < 0.80:
+                cutoff_idx = i
+                logger.info(
+                    f"Dynamic-k cutoff on reranker scores at index {i}: "
+                    f"score={final[i]['reranker_score']:.4f}, "
+                    f"rel={relative:.2f} (top={top_reranker_score:.4f})"
+                )
+                break
+        final = final[:cutoff_idx]
+
+    logger.info(
+        f"query_chunks_hybrid → {len(final)} final chunks "
+        + (f"(top reranker score: {final[0]['reranker_score']:.4f})" if final else "(empty)")
+    )
+    return final
 
 
 async def get_pdf_chunk_count(pdf_id: str) -> int:

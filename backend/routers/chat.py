@@ -15,7 +15,7 @@ from langchain_postgres import PostgresChatMessageHistory
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langsmith import traceable
 from models.schemas import ChatRequest, ChatResponse, Citation
-from services.vector_store import query_chunks
+from services.vector_store import query_chunks_hybrid
 from services.llm import generate_response, get_hard_refusal_text
 from typing import Dict, Generator, List
 
@@ -683,10 +683,12 @@ async def chat(request: ChatRequest):
     )
 
     try:
-        chunks = await query_chunks(
+        chunks = await query_chunks_hybrid(
             query=retrieval_query,
             pdf_ids=request.active_pdf_ids,
-            top_k=10,
+            vector_k=20,
+            bm25_k=20,
+            rerank_n=10,
             min_score=0.20,
         )
     except Exception as e:
@@ -707,7 +709,10 @@ async def chat(request: ChatRequest):
             retrieval_score=None,
         )
 
-    retrieval_score = round(chunks[0]["score"], 4)
+    # Use reranker_score as the primary retrieval score when available
+    retrieval_score = round(
+        chunks[0].get("reranker_score", chunks[0]["score"]), 4
+    )
 
     # Generate grounded response via Groq using the rewritten query for consistency
     try:
@@ -825,12 +830,14 @@ async def chat_stream(request: ChatRequest):
             
             logger.info(f"Original query: '{request.message}' → Rewritten: '{retrieval_query}'")
 
-            # Retrieve chunks
+            # Retrieve chunks — hybrid: BM25 + vector → RRF → BGE rerank
             try:
-                chunks = await query_chunks(
+                chunks = await query_chunks_hybrid(
                     query=retrieval_query,
                     pdf_ids=request.active_pdf_ids,
-                    top_k=10,
+                    vector_k=20,
+                    bm25_k=20,
+                    rerank_n=10,
                     min_score=0.20,
                 )
             except Exception as e:
@@ -846,7 +853,10 @@ async def chat_stream(request: ChatRequest):
                 await _persist_turn(request.session_id, request.message, refusal_text)
                 return
 
-            retrieval_score = round(chunks[0]["score"], 4)
+            # Use reranker_score as primary signal when available
+            retrieval_score = round(
+                chunks[0].get("reranker_score", chunks[0]["score"]), 4
+            )
             
             # Send metadata first
             yield f"data: {json.dumps({'type': 'metadata', 'retrieval_score': retrieval_score})}\n\n"
