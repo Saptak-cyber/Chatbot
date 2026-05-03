@@ -90,10 +90,19 @@ function preprocessContent(text: string): string {
     .replace(/\.\s*\*\s+(?=[^\s])/g, '.\n* ')
     // "[Citation]. * Item" → "[Citation].\n* Item"
     .replace(/(\[[^\]]+\])\s*\.\s*\*\s+/g, '$1.\n* ')
+    // "[Citation] * Item" → "[Citation]\n* Item"  (no period between bracket and bullet)
+    .replace(/(\[[^\]]+\])\s*\*\s+(?=[^\s*])/g, '$1\n* ')
+    // ": * Item" → ":\n* Item"  (inline bullet after colon — common in history-based responses)
+    .replace(/:\s*\*\s+(?=[^\s*])/g, ':\n* ')
     // "text. - Item" (dash variant, only if followed by capital to avoid hyphens)
     .replace(/\.\s*-\s+(?=[A-Z])/g, '.\n- ')
-    // Ensure "**Label:** rest of line" is on its own line
-    .replace(/([^\n])\s*(\*\*[^*]+\*\*:)/g, '$1\n\n$2');
+    // ": - Item" → ":\n- Item"  (dash variant after colon)
+    .replace(/:\s*-\s+(?=[A-Z])/g, ':\n- ')
+    // Ensure "**Label:** rest of line" is on its own line — but only when it's
+    // NOT already a list-item start (- / • / *). Excluding those characters from
+    // the look-behind prevents breaking "- **Label**: content" into a stray dash.
+    // Also restrict [^\n*]+ to avoid greedy cross-line matches.
+    .replace(/([^\n\-•*])\s*(\*\*[^\n*]+\*\*:)/g, '$1\n\n$2');
 }
 
 function renderContent(text: string) {

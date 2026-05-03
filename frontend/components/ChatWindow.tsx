@@ -398,7 +398,7 @@ export default function ChatWindow({
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
             rows={1}
-            disabled={!hasActivePdfs || isLoading}
+            disabled={!hasActivePdfs}
           />
           <button
             id="send-btn"
