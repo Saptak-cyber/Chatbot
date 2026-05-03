@@ -34,6 +34,7 @@ These tests verify that the agent answers correctly and cites sources.
 | A2 | Ask for a list of items covered in a specific section | Response uses bullet points, each with a citation |
 | A3 | Ask the same question twice in the same conversation | Second response says *"As I mentioned…"* and references the earlier answer |
 | A4 | Ask a question whose answer spans two adjacent pages | Response synthesises both pages and cites both page numbers |
+| A5 | Ask a question using exact technical acronyms or keywords (tests BM25) and then one using only broad semantic concepts (tests Vector) | Both queries retrieve the correct factual answer with citations |
 
 **Pass criteria:** Every factual claim has a verifiable `[Page N — filename.pdf]` inline citation. Cross-reference at least 3 claims against the source PDF.
 

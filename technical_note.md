@@ -25,12 +25,13 @@ DocMind is a **PDF-constrained Retrieval-Augmented Generation (RAG)** agent. Use
     ┌────────▼────────┐       ┌─────────▼──────────┐
     │  Qdrant Cloud   │       │  Groq Cloud         │
     │  (vector store) │       │  llama-3.1-8b-inst  │
-    └─────────────────┘       └────────────────────┘
+    └────────┬────────┘       └────────────────────┘
              │
-    ┌────────▼────────────────┐
-    │  HuggingFace Inference  │
-    │  BAAI/bge-small-en-v1.5 │
-    └─────────────────────────┘
+    ┌────────▼─────────────────────────────────┐
+    │  HuggingFace Inference                   │
+    │  BAAI/bge-small-en-v1.5 (Embedder)       │
+    │  BAAI/bge-reranker-base (Reranker)       │
+    └──────────────────────────────────────────┘
 ```
 
 ### Key Components
@@ -39,9 +40,11 @@ DocMind is a **PDF-constrained Retrieval-Augmented Generation (RAG)** agent. Use
 |---|---|---|
 | Frontend | Next.js 14, TypeScript | UI, SSE consumer, localStorage sessions |
 | Backend | FastAPI, Python 3.11 | API, RAG orchestration, SSE producer |
-| Vector Store | Qdrant Cloud | Semantic chunk storage & retrieval |
+| Vector Store | Qdrant Cloud | Semantic chunk storage & cosine retrieval |
+| Sparse Store | `rank-bm25` (In-memory) | Keyword-based BM25 retrieval |
 | LLM | Groq · Llama 3.1 8B Instant | Response generation |
 | Embeddings | HF Inference API · BGE-small-en-v1.5 | Chunk & query embeddings |
+| Reranker | HF Inference API · BGE-reranker-base | Cross-encoder relevance scoring |
 | Chunking | LlamaIndex SemanticSplitterNodeParser | Meaning-aware splitting |
 | Observability | LangSmith | Full trace of every RAG call |
 
@@ -62,10 +65,13 @@ User message
     Expand pronouns, add context from recent history
     │
     ▼
-[3] Semantic retrieval (query_chunks)
-    embed_query (BGE + instruction prefix)
-    → Qdrant cosine search (top_k=10, min_score=0.20)
-    → Returns ranked flat chunks sorted by cosine score
+[3] Hybrid Retrieval & Reranking (query_chunks_hybrid)
+    Parallel search:
+      ├─ Qdrant cosine search (top_vector_k=20, min_score=0.20)
+      └─ BM25 keyword search (top_bm25_k=20)
+    → Reciprocal Rank Fusion (RRF, k=60) merges results
+    → BGE-reranker-base scores top candidates
+    → Dynamic-k cutoff removes chunks below 80% of top reranker score
     │
     ▼
 [4] Hard refusal gate
@@ -94,9 +100,9 @@ User message
 - Each chunk carries a **contextual header** injected before the page text: `"Document: file.pdf | Section: 3. Leave Policy | Page: 7"` — encoding document position directly into the embedding space.
 - A **cross-page tail overlap** (last 3 sentences of page N prepended to page N+1) prevents paragraphs split across page boundaries from losing context.
 
-**Retrieval:** `query_chunks` embeds the rewritten query with a BGE instruction prefix, runs cosine search against Qdrant, and returns the top-10 flat chunks above `min_score=0.20`.
+**Retrieval:** `query_chunks_hybrid` runs both cosine search against Qdrant and a keyword search against an in-memory BM25 index. The results are merged via Reciprocal Rank Fusion (RRF) and scored by a cross-encoder (`bge-reranker-base`). Finally, a dynamic-k cutoff removes chunks that fall below 80% of the top reranker score.
 
-**Rationale:** Flat chunking avoids sending full-page parent texts to the LLM, staying well within the Groq free-tier 6,000 TPM limit. Semantic boundaries (rather than fixed-size windows) preserve meaning and improve citation accuracy.
+**Rationale:** Flat chunking avoids sending full-page parent texts to the LLM, staying well within the Groq free-tier 6,000 TPM limit. Semantic boundaries (rather than fixed-size windows) preserve meaning and improve citation accuracy. The hybrid retrieval pipeline ensures we capture both exact keyword matches and semantic concepts, while the reranker acts as a highly accurate final filter.
 
 **Trade-off:** Slightly less surrounding context per chunk compared to a parent-retrieval strategy, but eliminates 413 token-limit errors on the Groq free tier.
 

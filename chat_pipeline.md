@@ -25,8 +25,13 @@ flowchart TD
     E3 --> Z[Persist Turn → Neon]
 
     F --> F1[Query Rewriting\n_rewrite_query]
-    F1 --> F2[Semantic Retrieval\nquery_chunks]
-    F2 --> F3{Hard Refusal Gate\nchunks found?}
+    F1 --> F2[Hybrid Retrieval\nquery_chunks_hybrid]
+    F2 --> F2A[Vector Search]
+    F2 --> F2B[BM25 Search]
+    F2A --> F2C[RRF Merge]
+    F2B --> F2C
+    F2C --> F2D[BGE Reranking\n+ Dynamic-k cutoff]
+    F2D --> F3{Hard Refusal Gate\nchunks found?}
     F3 -- "0 chunks above\nmin_score=0.20" --> F4[SSE: type=refusal\nLocalised message]
     F3 -- "chunks retrieved" --> F5[LLM Generation\ngenerate_response_stream]
     F5 --> F6{Tag Detection\n[GROUNDED] or [REFUSED]?}
@@ -189,7 +194,7 @@ flowchart TD
 
 ---
 
-#### B2 — Semantic Retrieval
+#### B2 — Hybrid Retrieval & Reranking
 
 ```mermaid
 sequenceDiagram
@@ -198,14 +203,24 @@ sequenceDiagram
     participant Q as Qdrant Cloud
     participant VS as vector_store.py
 
-    C->>VS: query_chunks(query, pdf_ids, top_k=10, min_score=0.20)
-    VS->>E: embed_query(query)
-    Note over E: Prepend BGE instruction prefix:<br/>"Represent this sentence for searching<br/>relevant passages: {query}"
-    E->>E: HuggingFace Inference API<br/>BAAI/bge-small-en-v1.5 → float[384]
-    E-->>VS: query_vector
-    VS->>Q: search(collection, query_vector,\n  filter={pdf_id ∈ active_pdf_ids},\n  limit=top_k, score_threshold=min_score)
-    Q-->>VS: [{id, score, payload: {text, pdf_name, page, section}}]
-    VS-->>C: ranked chunks (cosine score ↓)
+    C->>VS: query_chunks_hybrid(query, pdf_ids, vector_k=20, bm25_k=20, rerank_n=10)
+    
+    par Vector Search
+        VS->>E: embed_query(query)
+        E->>E: HuggingFace API (BGE)
+        E-->>VS: query_vector
+        VS->>Q: search(cosine, min_score=0.20)
+        Q-->>VS: vector_chunks
+    and BM25 Search
+        VS->>VS: bm25_search(in-memory)
+        VS-->>VS: bm25_chunks
+    end
+
+    VS->>VS: _rrf_merge(vector_chunks, bm25_chunks, k=60)
+    VS->>RR: rerank_chunks(BAAI/bge-reranker-base)
+    RR-->>VS: reranked_chunks
+    VS->>VS: dynamic-k cutoff (<80% of top score)
+    VS-->>C: final chunks
 ```
 
 **Chunk payload structure:**
@@ -433,9 +448,11 @@ sequenceDiagram
     API->>RW: Rewrite query (if elaboration; else skip)
     RW-->>API: standalone_query
     API->>HF: Embed standalone_query (BGE + prefix)
-    HF-->>API: float[384] query vector
-    API->>QD: Cosine search (top_k=10, min_score=0.20)
-    QD-->>API: ranked chunks
+    API->>QD: Vector search (top_k=20, min_score=0.20)
+    API->>API: BM25 search (top_k=20)
+    API->>API: RRF Merge (k=60)
+    API->>HF: BGE-reranker-base (top_n=10)
+    API->>API: Dynamic-k cutoff (< 80% relative score)
     API-->>FE: data: {"type":"metadata","retrieval_score":0.74}
     API->>GR: Stream: system + history + chunks + query
     loop Streaming tokens

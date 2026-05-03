@@ -21,12 +21,13 @@ A **Retrieval-Augmented Generation (RAG)** web application that lets users uploa
              │  PDFs Router │ Chat Router│
              └──────┬───────────┬────────┘
                     │           │
-      ┌─────────────▼──┐  ┌─────▼───────────────────┐
       │  Qdrant Cloud  │  │      External APIs       │
       │ (vectors+meta) │  │  Groq llama-3.1-8b-inst  │
       └────────────────┘  │  HF bge-small-en-v1.5    │
-                          │  LangSmith (tracing)      │
-      ┌─────────────────┐ └──────────────────────────┘
+                          │  HF bge-reranker-base    │
+      ┌─────────────────┐ │  LangSmith (tracing)     │
+      │ rank-bm25 index │ └──────────────────────────┘
+      │ (in-memory)     │
       │ pdf_registry    │
       │ .json (metadata)│
       └─────────────────┘
@@ -79,7 +80,9 @@ A **Retrieval-Augmented Generation (RAG)** web application that lets users uploa
 |---|---|---|
 | `chunker.py` | PyMuPDF + LlamaIndex `SemanticSplitterNodeParser` (threshold=88) | Page text extraction; semantic chunking with cross-page overlap and contextual header injection |
 | `embedder.py` | HuggingFace Inference API (`BAAI/bge-small-en-v1.5`) | Dense embeddings; BGE query instruction prefix at query time |
-| `vector_store.py` | Qdrant Cloud | Store and retrieve chunk embeddings with cosine similarity; `min_score` threshold filtering |
+| `bm25_store.py` | `rank-bm25` | Sparse, exact-keyword retrieval. Built lazily by scrolling Qdrant. |
+| `vector_store.py` | Qdrant Cloud | Store/retrieve chunk embeddings (cosine similarity); provides `query_chunks_hybrid` |
+| `reranker.py` | HuggingFace Inference API (`BAAI/bge-reranker-base`) | Cross-encoder that scores and filters the RRF-merged chunk pool |
 | `llm.py` | Groq API (`llama-3.1-8b-instant`) | Streaming grounded answers via SSE; multi-language; [GROUNDED]/[REFUSED] tag protocol |
 
 #### Conversation & memory (`chat.py`)
@@ -149,10 +152,13 @@ Query rewriting (if history non-empty)
   └─ Groq: follow-up → standalone query for retrieval only
       │
       ▼
-vector_store.query_chunks(retrieval_query, …)
-  ├─ Embed query with BGE instruction prefix; Qdrant cosine similarity
-  ├─ Filter: active_pdf_ids, top_k=10, min_score=0.20
-  └─ Returns ranked chunks with scores
+vector_store.query_chunks_hybrid(retrieval_query, …)
+  ├─ Parallel execution:
+  │   ├─ Vector: Qdrant cosine similarity (top_vector_k=20, min_score=0.20)
+  │   └─ Sparse: BM25 keyword search (top_bm25_k=20)
+  ├─ Merge via Reciprocal Rank Fusion (RRF, k=60)
+  ├─ Rerank via BAAI/bge-reranker-base (top_n=10)
+  └─ Dynamic-k cutoff removes chunks < 80% of top reranker score
       │
       ▼
 Layer 1 — Hard Refusal (min_score threshold)
@@ -188,7 +194,7 @@ Frontend: MessageBubble — Markdown rendering, citations, copy-to-clipboard
 | Layer | Where | Mechanism |
 |---|---|---|
 | **Layer 0** | Chunking (index time) | Contextual header injection encodes document position into embeddings; cross-page overlap reduces mid-paragraph splits |
-| **Layer 1** | `vector_store.py` (retrieval) | Cosine similarity threshold `min_score=0.20`; no qualifying chunks → deterministic refusal without calling the answer LLM |
+| **Layer 1** | `vector_store.py` (retrieval) | Cosine `min_score=0.20` + Reranker Dynamic-k cutoff (80% relative threshold). No qualifying chunks → deterministic refusal |
 | **Layer 2** | `llm.py` (generation) | Strict system prompt; LLM must refuse when context does not answer the question; refusal phrase sets `is_grounded=False` |
 
 Query rewriting only affects **retrieval**; answers must still be grounded in retrieved excerpts.

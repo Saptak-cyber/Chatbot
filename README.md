@@ -5,9 +5,10 @@ A strictly grounded RAG conversational agent built with **Next.js** (frontend) a
 ## 🎯 Recent Improvements
 
 **Enhanced for evaluation criteria:**
+- ✅ **Hybrid Retrieval** - BM25 keyword search + Vector cosine search
+- ✅ **Cross-Encoder Reranking** - `BAAI/bge-reranker-base` to refine chunks
+- ✅ **Dynamic-k Cutoff** - Filters noise using an 80% relative threshold on reranker scores
 - ✅ **Enhanced refusal detection** - More robust out-of-scope handling
-- ✅ **Confidence scoring** - Transparent reliability indicators
-- ✅ **Optimized chunking** - Better semantic boundaries and citations
 - ✅ **Deterministic responses** - Temperature 0.0 for consistency
 
 📖 **See [IMPROVEMENT_SUMMARY.md](IMPROVEMENT_SUMMARY.md) for details**
@@ -31,7 +32,8 @@ A strictly grounded RAG conversational agent built with **Next.js** (frontend) a
 | Backend | FastAPI (Python) → Render |
 | Chunking | LlamaIndex `SemanticSplitterNodeParser` (threshold=88) |
 | Embeddings | HuggingFace Inference API — `BAAI/bge-small-en-v1.5` |
-| Vector DB | Qdrant Cloud |
+| Reranker | HuggingFace Inference API — `BAAI/bge-reranker-base` |
+| Vector DB | Qdrant Cloud (Dense) + `rank-bm25` (Sparse/Keyword) |
 | LLM | Groq — Llama 3.1 8B Instant |
 | Observability | LangSmith |
 

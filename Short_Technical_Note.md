@@ -14,9 +14,9 @@ A **Retrieval-Augmented Generation (RAG)** conversational agent that enables use
 
 ```
 ┌─────────────┐         ┌──────────────┐         ┌─────────────┐
-│   Next.js   │ ──REST─→│   FastAPI    │ ──API──→│ Groq LLM    │
-│  (Vercel)   │         │   (Render)   │         │ (Llama 3.3) │
-└─────────────┘         └──────┬───────┘         └─────────────┘
+│   Next.js   │ ─REST+SSE→│   FastAPI    │ ──API──→│ Groq LLM    │
+│  (Vercel)   │           │   (Render)   │         │ (Llama 3.1) │
+└─────────────┘           └──────┼───────┘         └─────────────┘
                                │
                     ┌──────────┼──────────┐
                     │          │          │
@@ -24,19 +24,25 @@ A **Retrieval-Augmented Generation (RAG)** conversational agent that enables use
               │  Qdrant  │ │  Neon  │ │   HF    │
               │ (vectors)│ │ (chat) │ │ (embed) │
               └──────────┘ └────────┘ └─────────┘
+              ┌──────────┐            ┌─────────┐
+              │   BM25   │            │   HF    │
+              │ (sparse) │            │(rerank) │
+              └──────────┘            └─────────┘
 ```
 
 ### Tech Stack
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
-| **Frontend** | Next.js 14 (TypeScript) | User interface, PDF management, chat |
-| **Backend** | FastAPI (Python) | API endpoints, orchestration |
-| **PDF Processing** | PyMuPDF + LlamaIndex | Text extraction, semantic chunking |
-| **Embeddings** | HuggingFace API (`all-MiniLM-L6-v2`) | Dense vector representations |
+| **Frontend** | Next.js 14 (TypeScript) | User interface, PDF management, multi-session threads, chat |
+| **Backend** | FastAPI (Python) | API endpoints, RAG orchestration, SSE streaming |
+| **PDF Processing** | PyMuPDF + LlamaIndex | Text extraction, semantic chunking (threshold=88) |
+| **Embeddings** | HuggingFace API (`BAAI/bge-small-en-v1.5`) | Dense vector representations; BGE query instruction prefix |
+| **Reranker** | HuggingFace API (`BAAI/bge-reranker-base`) | Cross-encoder relevance scoring |
 | **Vector Store** | Qdrant Cloud | Similarity search, metadata filtering |
-| **LLM** | Groq API (`llama-3.3-70b`) | Answer generation |
-| **Chat History** | Neon PostgreSQL | Conversation persistence |
+| **Sparse Store** | `rank-bm25` (In-memory) | Exact keyword matching, cached per PDF |
+| **LLM** | Groq API (`llama-3.1-8b-instant`) | Answer generation, streaming |
+| **Chat History** | In-memory + rolling summary | Bounded context; localStorage threads on client |
 | **Observability** | LangSmith | Tracing, debugging |
 
 ---
@@ -45,20 +51,20 @@ A **Retrieval-Augmented Generation (RAG)** conversational agent that enables use
 
 ### 1. **Semantic Chunking with Contextual Headers**
 
-**Decision:** Use LlamaIndex `SemanticSplitterNodeParser` with injected contextual headers.
+**Decision:** Use LlamaIndex `SemanticSplitterNodeParser` (threshold=88) with injected contextual headers.
 
 **Implementation:**
 - Extract text page-by-page using PyMuPDF
 - Detect section headings via font-size analysis
 - Inject header before each page: `"Document: report.pdf | Section: 3. Methodology | Page: 7"`
-- Apply semantic splitting with `buffer_size=2`, `breakpoint_threshold=92`
+- Apply semantic splitting with `buffer_size=2`, `breakpoint_threshold=88`
 - Add cross-page overlap (last 3 sentences of page N prepended to page N+1)
 
 **Rationale:**
+- Lower threshold (88 vs 95) creates more granular, precise child chunks
 - Contextual headers encode document position into embeddings → better retrieval
 - Cross-page overlap prevents mid-paragraph splits
 - Semantic boundaries improve citation accuracy
-- Page-scoped metadata enables precise citations
 
 **Trade-off:** Slightly larger chunks, but significantly better retrieval quality.
 
@@ -69,8 +75,11 @@ A **Retrieval-Augmented Generation (RAG)** conversational agent that enables use
 **Decision:** Three-layer defense mechanism.
 
 **Layer 1 — Hard Refusal (Retrieval Time):**
-- Cosine similarity threshold: `min_score=0.20`
-- If no chunks pass threshold → immediate refusal without calling LLM
+- Parallel execution: Vector search (cosine) + BM25 keyword search
+- Reciprocal Rank Fusion (RRF) merges results
+- `bge-reranker-base` scores and filters candidates
+- Dynamic-k cutoff removes chunks < 80% of top reranker score
+- If no chunks pass → immediate refusal without calling LLM
 - Saves API costs and latency
 
 **Layer 2 — Soft Refusal (Generation Time):**
@@ -96,7 +105,27 @@ A **Retrieval-Augmented Generation (RAG)** conversational agent that enables use
 
 ---
 
-### 3. **Conversational Memory with Rolling Summarization**
+### 3. **Hybrid Retrieval with Cross-Encoder Reranking**
+
+**Decision:** BM25 + Vector → RRF Merge → BGE Reranker → Dynamic-k Cutoff.
+
+**Implementation:**
+- Fetch top 20 semantic chunks from Qdrant.
+- Fetch top 20 keyword chunks via in-memory `rank-bm25`.
+- Merge using Reciprocal Rank Fusion (`k=60`).
+- Pass merged candidates to `bge-reranker-base` via HF Inference API.
+- Filter out any chunk whose reranker score falls below 80% of the top score.
+
+**Rationale:**
+- Captures both exact keyword matches and broad semantic concepts.
+- Reranker provides a highly accurate relevance signal compared to pure cosine similarity.
+- Dynamic-k precisely prunes noisy long-tail chunks.
+
+**Trade-off:** Additional latency (~300ms) for the reranker API call, but massive improvement in retrieval precision.
+
+---
+
+### 4. **Conversational Memory with Rolling Summarization**
 
 **Decision:** Hybrid approach — recent verbatim + older summarized.
 
@@ -223,8 +252,10 @@ Sent to LLM: "What about Q4?" (with history)
 1. User sends message → FastAPI receives request
 2. Load conversation history from Neon
 3. If history exists → rewrite query for retrieval
-4. Embed rewritten query → Qdrant similarity search
-5. Filter by active_pdf_ids, top_k=10, min_score=0.20
+4. **Hybrid Retrieval:**
+   - Embed rewritten query → Qdrant similarity search
+   - BM25 keyword search
+5. Merge via RRF, score via BGE-reranker, apply Dynamic-k cutoff
 6. If no chunks pass threshold → immediate refusal
 7. Build prompt: system + history + context + user query
 8. Groq generates grounded answer with citations
@@ -268,11 +299,11 @@ Transparent reliability → users know when to trust.
 |--------|-------|-------|
 | **Latency** | ~1.5s | Retrieval (0.3s) + LLM (1.2s) |
 | **First Token (Streaming)** | ~0.5s | After retrieval completes |
-| **Cold Start** | ~5-10s | Model loading on Render |
-| **Throughput** | ~10 req/s | Limited by Groq API rate limits |
+| **Cold Start** | ~5-10s | Model loading on Render free tier |
+| **Throughput** | ~10 req/s | Limited by Groq 6K TPM free tier |
 | **Memory** | ~512MB | Standard FastAPI footprint |
-| **Embedding Dimension** | 384 | `all-MiniLM-L6-v2` |
-| **Max Chunk Size** | ~500 tokens | Semantic boundaries |
+| **Embedding Dimension** | 384 | `BAAI/bge-small-en-v1.5` |
+| **Max Chunk Size** | ~300 tokens | Semantic boundaries (threshold=88) |
 | **Max Context** | ~8K tokens | Groq model limit |
 
 ---
@@ -305,14 +336,14 @@ Transparent reliability → users know when to trust.
 ## Known Limitations
 
 ### 1. **No Table/Figure Extraction**
-PyMuPDF extracts text only. Tables and figures are not processed.
+PyMuPDF extracts text only. Tables are rendered as Markdown in the UI but the underlying structure may not perfectly represent complex multi-column layouts.
 
-**Mitigation:** Works well for text-heavy documents.
+**Mitigation:** Works well for text-heavy documents; Markdown table renderer added.
 
-### 2. **Single-Language Support**
-Optimized for English. Other languages may have lower accuracy.
+### 2. **LLM Token Budget**
+Groq free tier: 6,000 TPM. Large context windows with 10 chunks can approach limits for long documents.
 
-**Mitigation:** Embedding model supports 50+ languages, but not tested.
+**Mitigation:** Chunker threshold=88 produces smaller chunks; top_k=10 is the working limit.
 
 ### 3. **No Multi-Hop Reasoning**
 Single retrieval pass. Complex multi-step reasoning may fail.
@@ -325,7 +356,7 @@ First request after inactivity takes ~5-10s on Render free tier.
 **Mitigation:** Pre-warming on startup, but Render may still sleep.
 
 ### 5. **Rate Limits**
-Groq free tier: 30 req/min. HuggingFace: 1000 req/day.
+Groq free tier: 6K TPM. HuggingFace: 1000 req/day.
 
 **Mitigation:** Sufficient for evaluation, upgrade for production.
 
@@ -380,14 +411,12 @@ Groq free tier: 30 req/min. HuggingFace: 1000 req/day.
 
 ### Not Implemented (Out of Scope)
 
-1. **Hybrid Search** — Combine dense + sparse (BM25) retrieval
-2. **Query Expansion** — Generate alternative phrasings
-3. **Answer Verification** — Second LLM call to validate
-4. **Multi-Hop Reasoning** — Chain-of-thought for complex queries
-5. **Table Extraction** — Parse tables into structured data
-6. **User Feedback Loop** — Thumbs up/down for continuous improvement
-7. **Multi-Language Support** — Explicit support for non-English PDFs
-8. **Document Comparison** — Compare multiple PDFs side-by-side
+1. **Query Expansion** — Generate alternative phrasings
+2. **Answer Verification** — Second LLM call to validate
+3. **Multi-Hop Reasoning** — Chain-of-thought for complex queries
+4. **Table Extraction** — Parse tables into structured data
+5. **User Feedback Loop** — Thumbs up/down for continuous improvement
+6. **Document Comparison** — Compare multiple PDFs side-by-side
 
 ---
 
@@ -452,8 +481,10 @@ This system demonstrates a production-ready RAG architecture with strong anti-ha
 - ✅ Strictly grounded in source documents
 - ✅ Precise page-level citations
 - ✅ Robust refusal for out-of-scope queries
-- ✅ Natural conversational flow
-- ✅ Transparent confidence indicators
+- ✅ Multi-session conversation threads (localStorage)
+- ✅ Multi-language support (8 languages)
+- ✅ Streaming responses (SSE)
+- ✅ Markdown rendering with copy-to-clipboard
 - ✅ Production-ready deployment
 
 **Ready for evaluation!** 🚀
