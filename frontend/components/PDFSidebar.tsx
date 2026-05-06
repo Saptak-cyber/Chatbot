@@ -67,30 +67,43 @@ export default function PDFSidebar({
 
   const handleFileChange = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
+      const files = Array.from(e.target.files || []);
+      if (files.length === 0) return;
       e.target.value = '';
-      showToast(`Processing "${file.name}"...`, 'loading');
-      try {
-        const result = await uploadPDF(file);
-        const newPdf: PDFInfo = {
-          id: result.id,
-          name: result.name,
-          page_count: result.page_count,
-          chunk_count: result.chunk_count,
-        };
-        onPdfsChange([...pdfs, newPdf]);
-        const newSelected = new Set(selectedPdfIds);
-        newSelected.add(newPdf.id);
-        onSelectionChange(newSelected);
-        showToast(`✓ "${result.name}" — ${result.chunk_count} chunks ready`, 'success');
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Upload failed';
-        showToast(msg, 'error');
-        onError(msg);
+
+      let currentPdfs = [...pdfs];
+      const currentSelected = new Set(selectedPdfIds);
+
+      for (const file of files) {
+        showToast(`Processing "${file.name}"...`, 'loading');
+        try {
+          const result = await uploadPDF(file);
+          const newPdf: PDFInfo = {
+            id: result.id,
+            name: result.name,
+            page_count: result.page_count,
+            chunk_count: result.chunk_count,
+          };
+          
+          currentPdfs = [...currentPdfs, newPdf];
+          currentSelected.add(newPdf.id);
+          
+          showToast(`✓ "${result.name}" — ${result.chunk_count} chunks ready`, 'success');
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : 'Upload failed';
+          showToast(msg, 'error');
+          onError(msg);
+        }
       }
+
+      // Update state once after all uploads in the batch
+      onPdfsChange(currentPdfs);
+      onSelectionChange(currentSelected);
+      
+      // Auto-load them immediately so the user can start chatting
+      onLoadPdfs(Array.from(currentSelected));
     },
-    [pdfs, selectedPdfIds, onPdfsChange, onSelectionChange, onError]
+    [pdfs, selectedPdfIds, onPdfsChange, onSelectionChange, onLoadPdfs, onError]
   );
 
   const handleToggleSelect = (id: string) => {
@@ -201,6 +214,7 @@ export default function PDFSidebar({
               ref={fileInputRef}
               type="file"
               accept=".pdf"
+              multiple
               onChange={handleFileChange}
               style={{ display: 'none' }}
               id="pdf-file-input"

@@ -92,6 +92,11 @@ export default function HomePage() {
         });
 
         setSelectedPdfIds((prev) => {
+          // If no PDFs are currently selected and no active ones exist, select all by default
+          if (prev.size === 0 && activePdfIds.length === 0 && loadedPdfs.length > 0) {
+            return new Set(loadedPdfs.map((p) => p.id));
+          }
+
           const next = new Set(prev);
           next.forEach((id) => {
             if (!validIds.has(id)) next.delete(id);
