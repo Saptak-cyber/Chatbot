@@ -63,7 +63,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         )
 
     try:
-        chunk_count = add_chunks(chunks)
+        chunk_count = await add_chunks(chunks)
     except Exception as e:
         logger.error(f"Vector store insert failed: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to store embeddings: {str(e)}")
@@ -87,7 +87,7 @@ async def upload_pdf(file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"PDF registry insert failed (rolling back vectors): {e}")
         try:
-            delete_pdf_chunks(pdf_id)
+            await delete_pdf_chunks(pdf_id)
         except Exception as rollback_err:
             logger.error(f"Vector rollback failed for pdf_id={pdf_id}: {rollback_err}")
         raise HTTPException(status_code=500, detail="Failed to persist PDF metadata.")
@@ -144,7 +144,7 @@ async def delete_pdf(pdf_id: str):
     pdf_name = row[0]
 
     try:
-        delete_pdf_chunks(pdf_id)
+        await delete_pdf_chunks(pdf_id)
     except Exception as e:
         logger.error(f"Failed to delete chunks for pdf_id={pdf_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to delete embeddings: {str(e)}")
